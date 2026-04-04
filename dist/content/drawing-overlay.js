@@ -1,0 +1,480 @@
+(function() {
+	//#region src/content/drawing-overlay.ts
+	(() => {
+		if (document.getElementById("devloom-fab")) return;
+		let currentTool = null;
+		let isDrawing = false;
+		let startX = 0;
+		let startY = 0;
+		let currentColor = "#ff4444";
+		let currentWidth = 3;
+		let blurOpacity = .5;
+		let snapshot = null;
+		function saveCanvasState() {
+			try {
+				const tempCanvas = document.createElement("canvas");
+				tempCanvas.width = window.innerWidth;
+				tempCanvas.height = window.innerHeight;
+				tempCanvas.getContext("2d").drawImage(canvas, 0, 0, tempCanvas.width, tempCanvas.height);
+				const dataUrl = tempCanvas.toDataURL("image/png");
+				chrome.storage.session.set({ devloomCanvas: dataUrl });
+			} catch {}
+		}
+		function restoreCanvasState() {
+			try {
+				chrome.storage.session.get("devloomCanvas", (result) => {
+					if (chrome.runtime.lastError || !result || !result.devloomCanvas) return;
+					const img = new Image();
+					img.onload = () => {
+						ctx.drawImage(img, 0, 0, window.innerWidth, window.innerHeight);
+					};
+					img.src = result.devloomCanvas;
+				});
+			} catch {}
+		}
+		let saveTimer = null;
+		function debouncedSave() {
+			if (saveTimer) clearTimeout(saveTimer);
+			saveTimer = setTimeout(saveCanvasState, 300);
+		}
+		const style = document.createElement("style");
+		style.textContent = `
+    @keyframes devloom-fab-in {
+      from { transform: scale(0); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+    @keyframes devloom-pulse {
+      0% { box-shadow: 0 4px 20px rgba(106,123,255,0.4), 0 0 0 0 rgba(106,123,255,0.3); }
+      70% { box-shadow: 0 4px 20px rgba(106,123,255,0.4), 0 0 0 10px rgba(106,123,255,0); }
+      100% { box-shadow: 0 4px 20px rgba(106,123,255,0.4), 0 0 0 0 rgba(106,123,255,0); }
+    }
+    #devloom-toolbar::-webkit-scrollbar { width: 0; }
+  `;
+		document.head.appendChild(style);
+		const fab = document.createElement("div");
+		fab.id = "devloom-fab";
+		fab.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`;
+		fab.style.cssText = `
+    position:fixed;bottom:24px;left:24px;z-index:2147483647;
+    width:48px;height:48px;border-radius:50%;
+    background:linear-gradient(135deg,#6a7bff,#5a6bef);
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;user-select:none;
+    animation:devloom-fab-in 0.3s ease-out, devloom-pulse 2s ease-out infinite;
+    transition:transform 0.2s;
+  `;
+		fab.onmouseenter = () => {
+			fab.style.transform = "scale(1.1)";
+		};
+		fab.onmouseleave = () => {
+			fab.style.transform = "scale(1)";
+		};
+		const toolbar = document.createElement("div");
+		toolbar.id = "devloom-toolbar";
+		toolbar.style.cssText = `
+    position:fixed;bottom:24px;left:24px;z-index:2147483647;
+    display:none;flex-direction:column;align-items:center;gap:4px;
+    width:52px;max-height:780px;overflow-y:auto;padding:8px 4px;
+    background:#1a1b2e;border-radius:14px;
+    box-shadow:0 8px 40px rgba(0,0,0,0.6),0 0 0 1px rgba(255,255,255,0.06);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    user-select:none;pointer-events:all;
+    animation:devloom-fab-in 0.2s ease-out;
+  `;
+		function makeBtn(svg, title, size = 40) {
+			const btn = document.createElement("button");
+			btn.innerHTML = svg;
+			btn.title = title;
+			btn.style.cssText = `
+      width:${size}px;height:${size}px;min-height:${size}px;border:none;border-radius:10px;
+      background:#252640;color:#e0e0e8;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;
+      transition:background 0.15s;padding:0;
+    `;
+			btn.onmouseenter = () => {
+				if (!btn.dataset.active) btn.style.background = "#333458";
+			};
+			btn.onmouseleave = () => {
+				if (!btn.dataset.active) btn.style.background = "#252640";
+			};
+			return btn;
+		}
+		const icons = {
+			pen: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>`,
+			line: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="19" x2="19" y2="5"/></svg>`,
+			arrow: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="10 5 19 5 19 14"/></svg>`,
+			circle: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>`,
+			rectangle: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="1"/></svg>`,
+			square: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="1"/></svg>`,
+			text: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="8" y1="20" x2="16" y2="20"/></svg>`,
+			blur: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>`
+		};
+		const toolOrder = [
+			"pen",
+			"line",
+			"arrow",
+			"circle",
+			"rectangle",
+			"square",
+			"text",
+			"blur"
+		];
+		const toolBtns = /* @__PURE__ */ new Map();
+		function selectTool(tool) {
+			if (currentTool === tool) {
+				deselectTool();
+				return;
+			}
+			currentTool = tool;
+			toolBtns.forEach((btn, t) => {
+				const active = t === tool;
+				btn.dataset.active = active ? "1" : "";
+				btn.style.background = active ? "#6a7bff" : "#252640";
+			});
+			updateOpacityVisibility();
+			activateDrawing();
+		}
+		function deselectTool() {
+			currentTool = null;
+			toolBtns.forEach((btn) => {
+				btn.dataset.active = "";
+				btn.style.background = "#252640";
+			});
+			updateOpacityVisibility();
+			deactivateDrawing();
+		}
+		toolOrder.forEach((t) => {
+			const btn = makeBtn(icons[t], t.charAt(0).toUpperCase() + t.slice(1));
+			btn.onclick = (e) => {
+				e.stopPropagation();
+				selectTool(t);
+			};
+			toolBtns.set(t, btn);
+			toolbar.appendChild(btn);
+		});
+		const sep = () => {
+			const d = document.createElement("div");
+			d.style.cssText = "width:32px;height:1px;background:#2a2b4a;margin:4px 0;flex-shrink:0;";
+			return d;
+		};
+		toolbar.appendChild(sep());
+		const colors = [
+			"#ff4444",
+			"#ff9f43",
+			"#feca57",
+			"#48dbfb",
+			"#6a7bff",
+			"#ffffff"
+		];
+		const colorBtns = [];
+		colors.forEach((c) => {
+			const btn = document.createElement("button");
+			btn.style.cssText = `
+      width:22px;height:22px;min-height:22px;padding:0;cursor:pointer;flex-shrink:0;
+      border:2px solid ${c === currentColor ? "#fff" : "transparent"};
+      border-radius:50%;background:${c};transition:border-color 0.15s;
+    `;
+			btn.onclick = (e) => {
+				e.stopPropagation();
+				currentColor = c;
+				colorBtns.forEach((b, i) => {
+					b.style.borderColor = colors[i] === c ? "#fff" : "transparent";
+				});
+			};
+			colorBtns.push(btn);
+			toolbar.appendChild(btn);
+		});
+		toolbar.appendChild(sep());
+		const sliderWrap = document.createElement("div");
+		sliderWrap.style.cssText = "width:40px;height:80px;display:flex;align-items:center;justify-content:center;flex-shrink:0;";
+		const slider = document.createElement("input");
+		slider.type = "range";
+		slider.min = "1";
+		slider.max = "12";
+		slider.value = String(currentWidth);
+		slider.style.cssText = "width:70px;accent-color:#6a7bff;cursor:pointer;transform:rotate(-90deg);transform-origin:center;";
+		slider.oninput = () => {
+			currentWidth = Number(slider.value);
+		};
+		sliderWrap.appendChild(slider);
+		toolbar.appendChild(sliderWrap);
+		toolbar.appendChild(sep());
+		const opacityLabel = document.createElement("div");
+		opacityLabel.textContent = "◐";
+		opacityLabel.title = "Blur Intensity";
+		opacityLabel.style.cssText = "color:#8a8ba8;font-size:16px;text-align:center;flex-shrink:0;display:none;";
+		const opacityWrap = document.createElement("div");
+		opacityWrap.style.cssText = "width:40px;height:80px;display:none;align-items:center;justify-content:center;flex-shrink:0;";
+		const opacitySlider = document.createElement("input");
+		opacitySlider.type = "range";
+		opacitySlider.min = "10";
+		opacitySlider.max = "100";
+		opacitySlider.value = String(Math.round(blurOpacity * 100));
+		opacitySlider.style.cssText = "width:70px;accent-color:#9b59b6;cursor:pointer;transform:rotate(-90deg);transform-origin:center;";
+		opacitySlider.oninput = () => {
+			blurOpacity = Number(opacitySlider.value) / 100;
+		};
+		opacityWrap.appendChild(opacitySlider);
+		const opacitySep = sep();
+		opacitySep.style.display = "none";
+		toolbar.appendChild(opacityLabel);
+		toolbar.appendChild(opacityWrap);
+		toolbar.appendChild(opacitySep);
+		function updateOpacityVisibility() {
+			const show = currentTool === "blur";
+			opacityLabel.style.display = show ? "block" : "none";
+			opacityWrap.style.display = show ? "flex" : "none";
+			opacitySep.style.display = show ? "block" : "none";
+		}
+		const clearBtn = makeBtn(`<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`, "Clear");
+		clearBtn.onclick = (e) => {
+			e.stopPropagation();
+			ctx.clearRect(0, 0, canvas.width, canvas.height);
+			chrome.storage.session.remove("devloomCanvas");
+		};
+		toolbar.appendChild(clearBtn);
+		const closeBtn = makeBtn(`<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`, "Close");
+		closeBtn.onclick = (e) => {
+			e.stopPropagation();
+			deselectTool();
+			collapsePanel();
+		};
+		toolbar.appendChild(closeBtn);
+		const canvasContainer = document.createElement("div");
+		canvasContainer.id = "devloom-canvas-container";
+		canvasContainer.style.cssText = "position:fixed;inset:0;z-index:2147483645;pointer-events:none;";
+		const canvas = document.createElement("canvas");
+		canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;";
+		canvasContainer.appendChild(canvas);
+		const ctx = canvas.getContext("2d", { willReadFrequently: true });
+		function resize() {
+			const dpr = window.devicePixelRatio || 1;
+			const imgData = canvas.width > 0 && canvas.height > 0 ? ctx.getImageData(0, 0, canvas.width, canvas.height) : null;
+			canvas.width = window.innerWidth * dpr;
+			canvas.height = window.innerHeight * dpr;
+			ctx.scale(dpr, dpr);
+			if (imgData) ctx.putImageData(imgData, 0, 0);
+		}
+		canvas.onmousedown = (e) => {
+			if (!currentTool) return;
+			if (currentTool === "text") {
+				placeText(e.clientX, e.clientY);
+				return;
+			}
+			isDrawing = true;
+			startX = e.clientX;
+			startY = e.clientY;
+			ctx.strokeStyle = currentColor;
+			ctx.lineWidth = currentWidth;
+			ctx.lineCap = "round";
+			ctx.lineJoin = "round";
+			if (currentTool === "pen") {
+				ctx.beginPath();
+				ctx.moveTo(e.clientX, e.clientY);
+			} else snapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
+		};
+		canvas.onmousemove = (e) => {
+			if (!isDrawing || !currentTool) return;
+			const x = e.clientX;
+			const y = e.clientY;
+			if (currentTool === "pen") {
+				ctx.lineTo(x, y);
+				ctx.stroke();
+			} else if (currentTool === "blur") {
+				if (snapshot) {
+					ctx.putImageData(snapshot, 0, 0);
+					drawBlurRect(startX, startY, x, y);
+				}
+			} else if (snapshot) {
+				ctx.putImageData(snapshot, 0, 0);
+				ctx.strokeStyle = currentColor;
+				ctx.lineWidth = currentWidth;
+				ctx.lineCap = "round";
+				ctx.lineJoin = "round";
+				drawShape(x, y);
+			}
+		};
+		canvas.onmouseup = () => {
+			if (isDrawing) {
+				isDrawing = false;
+				snapshot = null;
+				debouncedSave();
+			}
+		};
+		canvas.onmouseleave = () => {
+			if (isDrawing) {
+				isDrawing = false;
+				snapshot = null;
+				debouncedSave();
+			}
+		};
+		canvas.onclick = (e) => {
+			e.stopPropagation();
+			e.preventDefault();
+		};
+		canvas.oncontextmenu = (e) => {
+			e.preventDefault();
+		};
+		function drawShape(x, y) {
+			ctx.beginPath();
+			switch (currentTool) {
+				case "line":
+					ctx.moveTo(startX, startY);
+					ctx.lineTo(x, y);
+					break;
+				case "arrow":
+					drawArrow(startX, startY, x, y);
+					return;
+				case "circle": {
+					const rx = (x - startX) / 2;
+					const ry = (y - startY) / 2;
+					const r = Math.max(Math.abs(rx), Math.abs(ry));
+					ctx.arc(startX + rx, startY + ry, r, 0, Math.PI * 2);
+					break;
+				}
+				case "rectangle":
+					ctx.rect(startX, startY, x - startX, y - startY);
+					break;
+				case "square": {
+					const side = Math.max(Math.abs(x - startX), Math.abs(y - startY));
+					ctx.rect(startX, startY, side * (x > startX ? 1 : -1), side * (y > startY ? 1 : -1));
+					break;
+				}
+			}
+			ctx.stroke();
+		}
+		function drawArrow(fx, fy, tx, ty) {
+			const headLen = Math.max(14, currentWidth * 4);
+			const angle = Math.atan2(ty - fy, tx - fx);
+			ctx.beginPath();
+			ctx.moveTo(fx, fy);
+			ctx.lineTo(tx, ty);
+			ctx.stroke();
+			ctx.beginPath();
+			ctx.moveTo(tx, ty);
+			ctx.lineTo(tx - headLen * Math.cos(angle - Math.PI / 6), ty - headLen * Math.sin(angle - Math.PI / 6));
+			ctx.moveTo(tx, ty);
+			ctx.lineTo(tx - headLen * Math.cos(angle + Math.PI / 6), ty - headLen * Math.sin(angle + Math.PI / 6));
+			ctx.stroke();
+		}
+		function drawBlurRect(x1, y1, x2, y2) {
+			const left = Math.min(x1, x2);
+			const top = Math.min(y1, y2);
+			const w = Math.abs(x2 - x1);
+			const h = Math.abs(y2 - y1);
+			if (w < 2 || h < 2) return;
+			const blockSize = 10;
+			ctx.save();
+			ctx.globalAlpha = blurOpacity;
+			ctx.fillStyle = "rgb(100, 100, 120)";
+			ctx.fillRect(left, top, w, h);
+			for (let bx = 0; bx < w; bx += blockSize) for (let by = 0; by < h; by += blockSize) {
+				ctx.fillStyle = (bx + by) % (blockSize * 2) === 0 ? "rgb(60,60,80)" : "rgb(130,130,150)";
+				ctx.fillRect(left + bx, top + by, blockSize, blockSize);
+			}
+			ctx.globalAlpha = 1;
+			ctx.strokeStyle = "rgba(255,255,255,0.2)";
+			ctx.lineWidth = 1;
+			ctx.strokeRect(left, top, w, h);
+			ctx.restore();
+		}
+		function placeText(x, y) {
+			canvas.style.pointerEvents = "none";
+			const fontSize = Math.max(14, currentWidth * 4);
+			const input = document.createElement("input");
+			input.type = "text";
+			input.placeholder = "Type here...";
+			input.style.cssText = `
+      position:fixed;left:${x}px;top:${y - fontSize / 2 - 4}px;z-index:2147483647;
+      background:rgba(26,27,46,0.95);color:${currentColor};
+      border:2px solid #6a7bff;border-radius:6px;
+      padding:6px 10px;font-size:${fontSize}px;
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      outline:none;min-width:150px;
+      box-shadow:0 4px 16px rgba(0,0,0,0.4);
+    `;
+			document.body.appendChild(input);
+			setTimeout(() => input.focus(), 10);
+			let committed = false;
+			const commit = () => {
+				if (committed) return;
+				committed = true;
+				const text = input.value.trim();
+				if (text) {
+					ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`;
+					ctx.fillStyle = currentColor;
+					ctx.fillText(text, x, y);
+					debouncedSave();
+				}
+				input.remove();
+				if (currentTool) canvas.style.pointerEvents = "all";
+			};
+			input.onkeydown = (e) => {
+				if (e.key === "Enter") {
+					e.preventDefault();
+					commit();
+				}
+				if (e.key === "Escape") {
+					committed = true;
+					input.remove();
+					if (currentTool) canvas.style.pointerEvents = "all";
+				}
+				e.stopPropagation();
+			};
+			input.onblur = commit;
+		}
+		function activateDrawing() {
+			canvasContainer.style.display = "block";
+			canvas.style.pointerEvents = "all";
+			canvas.style.cursor = "crosshair";
+			resize();
+		}
+		function deactivateDrawing() {
+			canvas.style.pointerEvents = "none";
+			canvas.style.cursor = "default";
+		}
+		function expandPanel() {
+			fab.style.display = "none";
+			toolbar.style.display = "flex";
+		}
+		function collapsePanel() {
+			toolbar.style.display = "none";
+			fab.style.display = "flex";
+			deselectTool();
+		}
+		fab.onclick = (e) => {
+			e.stopPropagation();
+			expandPanel();
+		};
+		function onKeydown(e) {
+			if (e.key === "Escape") {
+				if (currentTool) deselectTool();
+				else if (toolbar.style.display !== "none") collapsePanel();
+			}
+		}
+		document.addEventListener("keydown", onKeydown);
+		function onMessage(msg) {
+			if (msg && msg.type === "DEVLOOM_REMOVE_DRAWING") destroy();
+		}
+		chrome.runtime.onMessage.addListener(onMessage);
+		function destroy() {
+			fab.remove();
+			toolbar.remove();
+			canvasContainer.remove();
+			style.remove();
+			document.removeEventListener("keydown", onKeydown);
+			window.removeEventListener("resize", resize);
+			chrome.runtime.onMessage.removeListener(onMessage);
+			chrome.storage.session.remove("devloomCanvas");
+		}
+		window.addEventListener("resize", () => {
+			if (currentTool) resize();
+		});
+		document.body.appendChild(canvasContainer);
+		document.body.appendChild(fab);
+		document.body.appendChild(toolbar);
+		resize();
+		restoreCanvasState();
+	})();
+	//#endregion
+})();
