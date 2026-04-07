@@ -65,6 +65,12 @@ let pendingRegion: {
   resolve: (result: { success: boolean; recordingId?: string; error?: string }) => void;
 } | null = null;
 
+// ── Pending capture (waiting for user to grant screen permission) ──
+let pendingCapture: {
+  resolve: () => void;
+  reject: (error: string) => void;
+} | null = null;
+
 chrome.runtime.onMessage.addListener(
   (msg: ExtensionMessage, _sender, sendResponse) => {
     switch (msg.type) {
@@ -85,10 +91,19 @@ chrome.runtime.onMessage.addListener(
         return false;
 
       case MSG.CAPTURE_READY:
+        if (pendingCapture) {
+          pendingCapture.resolve();
+          pendingCapture = null;
+        }
         return false;
 
       case MSG.CAPTURE_FAILED:
-        handleCaptureFailed();
+        if (pendingCapture) {
+          pendingCapture.reject((msg as any).error || 'Capture failed');
+          pendingCapture = null;
+        } else {
+          handleCaptureFailed();
+        }
         return false;
 
       case MSG.REGION_SELECTED:
@@ -112,8 +127,19 @@ chrome.runtime.onMessage.addListener(
         }
         return false;
 
+      case MSG.REQUEST_MIC_PERMISSION:
+        handleMicPermission().then(sendResponse);
+        return true;
+
       default: {
         const raw = msg as any;
+        if (raw.type === 'MIC_PERMISSION_RESULT') {
+          if (micPermissionResolve) {
+            micPermissionResolve({ granted: raw.granted, error: raw.error });
+            micPermissionResolve = null;
+          }
+          return false;
+        }
         if (raw.type === 'AUTH_TOKEN_RECEIVED' && raw.token) {
           chrome.storage.local.set({ apiToken: raw.token });
           return false;
@@ -181,17 +207,31 @@ async function beginRecording(
 
     await ensureOffscreenDocument();
 
+    // Send BEGIN_CAPTURE and wait for user to grant screen permission
     await chrome.runtime.sendMessage({
       type: MSG.BEGIN_CAPTURE,
       recordingId: rec._id,
       cropRect,
     });
 
+    // Wait for CAPTURE_READY or CAPTURE_FAILED from offscreen
+    try {
+      await new Promise<void>((resolve, reject) => {
+        pendingCapture = { resolve, reject };
+      });
+    } catch (captureError) {
+      // User cancelled the screen picker or capture failed — clean up
+      api.deleteRecording(rec._id).catch(() => {});
+      return { success: false, error: String(captureError) };
+    }
+
+    // User granted permission — now start recording
+    const actualStart = Date.now();
     recording = {
       status: 'recording',
       id: rec._id,
       tabId,
-      startTime: now,
+      startTime: actualStart,
     };
 
     startNetworkListeners();
@@ -274,13 +314,19 @@ async function stopRecording(): Promise<{
     await chrome.runtime.sendMessage({ type: MSG.STOP_RECORDING });
     stopNetworkListeners();
     stopNavigationListeners();
-    chrome.action.setBadgeText({ text: '' });
-    stopKeepalive();
 
     // Remove drawing overlay from all injected tabs
     removeOverlayFromAllTabs();
 
-    return { success: true, recordingId: recording.id };
+    // Keep keepalive running — offscreen is uploading the video
+    // It will be stopped when RECORDING_SAVED is received
+    chrome.action.setBadgeText({ text: 'UP' });
+    chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+
+    const recId = recording.id;
+    recording = { status: 'uploading', id: recId, tabId: null, startTime: null };
+
+    return { success: true, recordingId: recId };
   } catch (err) {
     return { success: false, error: (err as Error).message };
   }
@@ -289,8 +335,10 @@ async function stopRecording(): Promise<{
 function onRecordingSaved(recordingId: string, duration: number): void {
   api.updateRecording(recordingId, { duration }).catch(() => {});
   recording = { status: 'idle', id: null, tabId: null, startTime: null };
-  // Don't close offscreen here — it's still uploading the video.
-  // It will be closed before next recording starts in ensureOffscreenDocument.
+  chrome.action.setBadgeText({ text: '' });
+  stopKeepalive();
+  // Notify popup that upload is done (via storage so it works even if popup was reopened)
+  chrome.storage.session.set({ uploadComplete: { recordingId, timestamp: Date.now() } });
 }
 
 // ── Offscreen Document ─────────────────────────────────
@@ -564,6 +612,30 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     stopRecording();
   }
 });
+
+// ── Mic Permission via popup window ────────────────────
+let micPermissionResolve: ((result: { granted: boolean; error?: string }) => void) | null = null;
+
+async function handleMicPermission(): Promise<{ granted: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    micPermissionResolve = resolve;
+    // Open a small window so Chrome can show the mic permission prompt
+    chrome.windows.create({
+      url: chrome.runtime.getURL('mic-permission.html'),
+      type: 'popup',
+      width: 380,
+      height: 240,
+      focused: true,
+    });
+    // Timeout after 30s in case user closes the window without responding
+    setTimeout(() => {
+      if (micPermissionResolve) {
+        micPermissionResolve({ granted: false, error: 'Timed out' });
+        micPermissionResolve = null;
+      }
+    }, 30000);
+  });
+}
 
 // ── Service Worker Keepalive ───────────────────────────
 function startKeepalive(): void {

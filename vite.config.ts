@@ -10,6 +10,7 @@ const contentScripts = {
   'content/drawing-overlay': resolve(__dirname, 'src/content/drawing-overlay.ts'),
   'content/region-selector': resolve(__dirname, 'src/content/region-selector.ts'),
   'content/auth-detector': resolve(__dirname, 'src/content/auth-detector.ts'),
+  'mic-permission': resolve(__dirname, 'src/mic-permission.ts'),
 };
 
 // Plugin to build content scripts separately as IIFE after the main build

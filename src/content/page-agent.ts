@@ -73,14 +73,23 @@
   const originalFetch = window.fetch.bind(window);
 
   window.fetch = async function (...args: Parameters<typeof fetch>) {
-    const req = new Request(...args);
-    const url = req.url;
-    const method = req.method;
+    const input = args[0];
+    const init = args[1];
+
+    // Extract metadata WITHOUT creating a new Request (which would consume the body)
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input instanceof Request
+          ? input.url
+          : String(input);
+    const method = init?.method || (input instanceof Request ? input.method : 'GET');
 
     let requestBody: string | null = null;
-    try {
-      requestBody = await req.clone().text();
-    } catch { /* no body */ }
+    if (init?.body && typeof init.body === 'string') {
+      requestBody = init.body;
+    }
 
     try {
       const response = await originalFetch(...args);

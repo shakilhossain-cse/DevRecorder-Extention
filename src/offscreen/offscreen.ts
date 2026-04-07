@@ -9,7 +9,7 @@ let startTime: number | null = null;
 let cropIntervalId: ReturnType<typeof setInterval> | null = null;
 
 chrome.runtime.onMessage.addListener(
-  (msg: ExtensionMessage, _sender, sendResponse) => {
+  (msg: any, _sender: any, sendResponse: any) => {
     if (msg.type === MSG.BEGIN_CAPTURE) {
       startCapture(msg.recordingId, msg.cropRect);
       sendResponse({ success: true });
@@ -21,6 +21,7 @@ chrome.runtime.onMessage.addListener(
       sendResponse({ success: true });
       return false;
     }
+
   }
 );
 
@@ -31,15 +32,14 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
 
   try {
     const displayStream = await navigator.mediaDevices.getDisplayMedia({
-      video: {
-        displaySurface: 'window',
-        frameRate: 30,
-      },
+      video: { frameRate: 30 },
       audio: true,
-      // @ts-expect-error — Chrome-specific: hide "Entire Screen" tab
+      // @ts-expect-error — Chrome-specific options
+      preferCurrentTab: false,
       surfaceSwitching: 'exclude',
       selfBrowserSurface: 'include',
       monitorTypeSurfaces: 'exclude',
+      systemAudio: 'include',
     });
 
     const surface = displayStream.getVideoTracks()[0]?.getSettings()?.displaySurface;
@@ -57,20 +57,18 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
           audio: { echoCancellation: true, noiseSuppression: true },
           video: false,
         });
-        // Mic acquired
-      } else {
-        // Mic permission not granted, recording without voice
       }
     } catch {
-      // Mic unavailable, recording without voice
+      // Mic unavailable
     }
 
-    // Build the stream to record — keep displayStream as-is for window mode
     let recordStream: MediaStream;
     let audioCtx: AudioContext | null = null;
 
-    if (cropRect && cropRect.width > 0 && cropRect.height > 0) {
-      // Region mode: use hidden video + canvas to crop
+    const isRegion = cropRect && cropRect.width > 0 && cropRect.height > 0;
+
+    if (isRegion) {
+      // ── Region mode: canvas crop + AudioContext for audio ──
       const video = document.createElement('video');
       video.srcObject = displayStream;
       video.muted = true;
@@ -102,71 +100,58 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
 
       const canvasStream = canvas.captureStream(30);
 
-      // For region mode, mix audio separately
-      audioCtx = new AudioContext();
-      const dest = audioCtx.createMediaStreamDestination();
+      // Mix audio via AudioContext (needed because canvas has no audio)
+      const allAudioTracks: MediaStreamTrack[] = [];
       const sysAudio = displayStream.getAudioTracks();
-      if (sysAudio.length > 0) {
-        audioCtx.createMediaStreamSource(new MediaStream(sysAudio)).connect(dest);
-      }
-      if (micStream) {
-        audioCtx.createMediaStreamSource(micStream).connect(dest);
-      }
-
-      recordStream = new MediaStream([
-        ...canvasStream.getVideoTracks(),
-        ...dest.stream.getAudioTracks(),
-      ]);
-    } else {
-      // Window mode: play displayStream in a <video> to keep tracks alive,
-      // then use canvas.captureStream for video + AudioContext for mixed audio
-      const video = document.createElement('video');
-      video.srcObject = displayStream;
-      video.muted = true;
-      video.playsInline = true;
-      await video.play();
-
-      const vw = displayStream.getVideoTracks()[0].getSettings().width || video.videoWidth || 1920;
-      const vh = displayStream.getVideoTracks()[0].getSettings().height || video.videoHeight || 1080;
-
-      const canvas = document.createElement('canvas');
-      canvas.width = vw;
-      canvas.height = vh;
-      const ctx = canvas.getContext('2d')!;
-
-      cropIntervalId = setInterval(() => {
-        ctx.drawImage(video, 0, 0, vw, vh);
-      }, 33);
-
-      const canvasStream = canvas.captureStream(30);
-
-      // Mix system audio + mic
-      const hasSystemAudio = displayStream.getAudioTracks().length > 0;
       const hasMic = micStream && micStream.getAudioTracks().length > 0;
-      // Audio — system: ${hasSystemAudio}, mic: ${hasMic}
 
-      const audioTracks: MediaStreamTrack[] = [];
-      if (hasSystemAudio || hasMic) {
+      if (sysAudio.length > 0 || hasMic) {
         audioCtx = new AudioContext();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
         const dest = audioCtx.createMediaStreamDestination();
-        if (hasSystemAudio) {
-          audioCtx.createMediaStreamSource(new MediaStream(displayStream.getAudioTracks())).connect(dest);
+        if (sysAudio.length > 0) {
+          audioCtx.createMediaStreamSource(new MediaStream(sysAudio)).connect(dest);
         }
         if (hasMic && micStream) {
           audioCtx.createMediaStreamSource(micStream).connect(dest);
         }
-        audioTracks.push(...dest.stream.getAudioTracks());
+        allAudioTracks.push(...dest.stream.getAudioTracks());
       }
 
       recordStream = new MediaStream([
         ...canvasStream.getVideoTracks(),
-        ...audioTracks,
+        ...allAudioTracks,
       ]);
+    } else if (micStream && micStream.getAudioTracks().length > 0) {
+      // ── Window mode WITH mic: need AudioContext to mix system + mic audio ──
+      // Keep displayStream video track directly (no canvas = better quality)
+      const allAudioTracks: MediaStreamTrack[] = [];
+      const sysAudio = displayStream.getAudioTracks();
+
+      audioCtx = new AudioContext();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      const dest = audioCtx.createMediaStreamDestination();
+      if (sysAudio.length > 0) {
+        audioCtx.createMediaStreamSource(new MediaStream(sysAudio)).connect(dest);
+      }
+      audioCtx.createMediaStreamSource(micStream).connect(dest);
+      allAudioTracks.push(...dest.stream.getAudioTracks());
+
+      recordStream = new MediaStream([
+        ...displayStream.getVideoTracks(),
+        ...allAudioTracks,
+      ]);
+    } else {
+      // ── Window mode WITHOUT mic: record displayStream directly ──
+      // No canvas, no AudioContext — native audio passthrough
+      recordStream = displayStream;
     }
 
-    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-      ? 'video/webm;codecs=vp9'
-      : 'video/webm;codecs=vp8';
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+      ? 'video/webm;codecs=vp9,opus'
+      : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+        ? 'video/webm;codecs=vp8,opus'
+        : 'video/webm';
 
     mediaRecorder = new MediaRecorder(recordStream, {
       mimeType,
@@ -184,9 +169,6 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       const blob = new Blob(chunks, { type: mimeType });
       const currentRecId = recordingId!;
 
-      // onstop fired
-
-      // Stop crop loop
       if (cropIntervalId) {
         clearInterval(cropIntervalId);
         cropIntervalId = null;
@@ -196,18 +178,14 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       if (micStream) micStream.getTracks().forEach((track) => track.stop());
       if (audioCtx) audioCtx.close();
 
-      // Upload video FIRST (before notifying saved, so offscreen stays alive)
       if (blob.size > 0) {
         try {
           await api.uploadVideo(currentRecId, blob);
         } catch {
           // Upload failed
         }
-      } else {
-        // Blob is empty — nothing to upload
       }
 
-      // Notify service worker AFTER upload completes
       chrome.runtime.sendMessage({
         type: MSG.RECORDING_SAVED,
         recordingId: currentRecId,
@@ -230,7 +208,6 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
 
     chrome.runtime.sendMessage({ type: MSG.CAPTURE_READY });
   } catch (err) {
-    // Failed to start capture
     chrome.runtime.sendMessage({
       type: MSG.CAPTURE_FAILED,
       error: (err as Error).message,

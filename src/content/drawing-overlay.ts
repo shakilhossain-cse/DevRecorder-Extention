@@ -60,9 +60,9 @@
       to { transform: scale(1); opacity: 1; }
     }
     @keyframes devrecorder-pulse {
-      0% { box-shadow: 0 4px 20px rgba(106,123,255,0.4), 0 0 0 0 rgba(106,123,255,0.3); }
-      70% { box-shadow: 0 4px 20px rgba(106,123,255,0.4), 0 0 0 10px rgba(106,123,255,0); }
-      100% { box-shadow: 0 4px 20px rgba(106,123,255,0.4), 0 0 0 0 rgba(106,123,255,0); }
+      0% { box-shadow: 0 4px 20px rgba(239,68,68,0.4), 0 0 0 0 rgba(239,68,68,0.3); }
+      70% { box-shadow: 0 4px 20px rgba(239,68,68,0.4), 0 0 0 10px rgba(239,68,68,0); }
+      100% { box-shadow: 0 4px 20px rgba(239,68,68,0.4), 0 0 0 0 rgba(239,68,68,0); }
     }
     #devrecorder-toolbar::-webkit-scrollbar { width: 0; }
   `;
@@ -71,11 +71,11 @@
   // ── FAB ───────────────────────────────────────────
   const fab = document.createElement('div');
   fab.id = 'devrecorder-fab';
-  fab.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`;
+  fab.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`;
   fab.style.cssText = `
     position:fixed;bottom:24px;left:24px;z-index:2147483647;
-    width:48px;height:48px;border-radius:50%;
-    background:linear-gradient(135deg,#6a7bff,#5a6bef);
+    width:40px;height:40px;border-radius:50%;
+    background:linear-gradient(135deg,#ef4444,#dc2626);
     display:flex;align-items:center;justify-content:center;
     cursor:pointer;user-select:none;
     animation:devrecorder-fab-in 0.3s ease-out, devrecorder-pulse 2s ease-out infinite;
@@ -89,9 +89,9 @@
   toolbar.id = 'devrecorder-toolbar';
   toolbar.style.cssText = `
     position:fixed;bottom:24px;left:24px;z-index:2147483647;
-    display:none;flex-direction:column;align-items:center;gap:4px;
-    width:52px;max-height:780px;overflow-y:auto;padding:8px 4px;
-    background:#1a1b2e;border-radius:14px;
+    display:none;flex-direction:column;align-items:center;gap:3px;
+    width:42px;max-height:780px;overflow-y:auto;padding:6px 3px;
+    background:#1a1b2e;border-radius:12px;
     box-shadow:0 8px 40px rgba(0,0,0,0.6),0 0 0 1px rgba(255,255,255,0.06);
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     user-select:none;pointer-events:all;
@@ -99,12 +99,12 @@
   `;
 
   // ── Helper: icon button ───────────────────────────
-  function makeBtn(svg: string, title: string, size = 40): HTMLButtonElement {
+  function makeBtn(svg: string, title: string, size = 30): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.innerHTML = svg;
     btn.title = title;
     btn.style.cssText = `
-      width:${size}px;height:${size}px;min-height:${size}px;border:none;border-radius:10px;
+      width:${size}px;height:${size}px;min-height:${size}px;border:none;border-radius:8px;
       background:#252640;color:#e0e0e8;cursor:pointer;
       display:flex;align-items:center;justify-content:center;
       transition:background 0.15s;padding:0;
@@ -116,14 +116,14 @@
 
   // SVG icons
   const icons: Record<Tool, string> = {
-    pen: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>`,
-    line: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="19" x2="19" y2="5"/></svg>`,
-    arrow: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="10 5 19 5 19 14"/></svg>`,
-    circle: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>`,
-    rectangle: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="1"/></svg>`,
-    square: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="1"/></svg>`,
-    text: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="8" y1="20" x2="16" y2="20"/></svg>`,
-    blur: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>`,
+    pen: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>`,
+    line: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="19" x2="19" y2="5"/></svg>`,
+    arrow: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="10 5 19 5 19 14"/></svg>`,
+    circle: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>`,
+    rectangle: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="1"/></svg>`,
+    square: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="1"/></svg>`,
+    text: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="8" y1="20" x2="16" y2="20"/></svg>`,
+    blur: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>`,
   };
 
   const toolOrder: Tool[] = ['pen', 'line', 'arrow', 'circle', 'rectangle', 'square', 'text', 'blur'];
@@ -140,7 +140,7 @@
     toolBtns.forEach((btn, t) => {
       const active = t === tool;
       btn.dataset.active = active ? '1' : '';
-      btn.style.background = active ? '#6a7bff' : '#252640';
+      btn.style.background = active ? '#ef4444' : '#252640';
     });
     updateOpacityVisibility();
     activateDrawing();
@@ -166,7 +166,7 @@
   // Separator
   const sep = () => {
     const d = document.createElement('div');
-    d.style.cssText = 'width:32px;height:1px;background:#2a2b4a;margin:4px 0;flex-shrink:0;';
+    d.style.cssText = 'width:26px;height:1px;background:#2a2b4a;margin:3px 0;flex-shrink:0;';
     return d;
   };
   toolbar.appendChild(sep());
@@ -178,7 +178,7 @@
   colors.forEach((c) => {
     const btn = document.createElement('button');
     btn.style.cssText = `
-      width:22px;height:22px;min-height:22px;padding:0;cursor:pointer;flex-shrink:0;
+      width:18px;height:18px;min-height:18px;padding:0;cursor:pointer;flex-shrink:0;
       border:2px solid ${c === currentColor ? '#fff' : 'transparent'};
       border-radius:50%;background:${c};transition:border-color 0.15s;
     `;
@@ -194,13 +194,13 @@
 
   // ── Width slider (vertical) ───────────────────────
   const sliderWrap = document.createElement('div');
-  sliderWrap.style.cssText = 'width:40px;height:80px;display:flex;align-items:center;justify-content:center;flex-shrink:0;';
+  sliderWrap.style.cssText = 'width:32px;height:60px;display:flex;align-items:center;justify-content:center;flex-shrink:0;';
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.min = '1';
   slider.max = '12';
   slider.value = String(currentWidth);
-  slider.style.cssText = 'width:70px;accent-color:#6a7bff;cursor:pointer;transform:rotate(-90deg);transform-origin:center;';
+  slider.style.cssText = 'width:50px;accent-color:#ef4444;cursor:pointer;transform:rotate(-90deg);transform-origin:center;';
   slider.oninput = () => { currentWidth = Number(slider.value); };
   sliderWrap.appendChild(slider);
   toolbar.appendChild(sliderWrap);
@@ -213,13 +213,13 @@
   opacityLabel.style.cssText = 'color:#8a8ba8;font-size:16px;text-align:center;flex-shrink:0;display:none;';
 
   const opacityWrap = document.createElement('div');
-  opacityWrap.style.cssText = 'width:40px;height:80px;display:none;align-items:center;justify-content:center;flex-shrink:0;';
+  opacityWrap.style.cssText = 'width:32px;height:60px;display:none;align-items:center;justify-content:center;flex-shrink:0;';
   const opacitySlider = document.createElement('input');
   opacitySlider.type = 'range';
   opacitySlider.min = '10';
   opacitySlider.max = '100';
   opacitySlider.value = String(Math.round(blurOpacity * 100));
-  opacitySlider.style.cssText = 'width:70px;accent-color:#9b59b6;cursor:pointer;transform:rotate(-90deg);transform-origin:center;';
+  opacitySlider.style.cssText = 'width:50px;accent-color:#9b59b6;cursor:pointer;transform:rotate(-90deg);transform-origin:center;';
   opacitySlider.oninput = () => { blurOpacity = Number(opacitySlider.value) / 100; };
   opacityWrap.appendChild(opacitySlider);
 
@@ -240,7 +240,7 @@
 
   // ── Clear button ──────────────────────────────────
   const clearBtn = makeBtn(
-    `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`,
+    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`,
     'Clear'
   );
   clearBtn.onclick = (e) => {
@@ -253,7 +253,7 @@
 
   // ── Close button (X) — deselects tool & collapses ─
   const closeBtn = makeBtn(
-    `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+    `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
     'Close'
   );
   closeBtn.onclick = (e) => {
@@ -427,7 +427,7 @@
     input.style.cssText = `
       position:fixed;left:${x}px;top:${y - fontSize / 2 - 4}px;z-index:2147483647;
       background:rgba(26,27,46,0.95);color:${currentColor};
-      border:2px solid #6a7bff;border-radius:6px;
+      border:2px solid #ef4444;border-radius:6px;
       padding:6px 10px;font-size:${fontSize}px;
       font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
       outline:none;min-width:150px;

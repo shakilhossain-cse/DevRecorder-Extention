@@ -13,6 +13,7 @@ export const MSG = {
   REGION_CANCELLED: 'REGION_CANCELLED',
   AUTH_TOKEN_RECEIVED: 'AUTH_TOKEN_RECEIVED',
   AUTH_LOGOUT: 'AUTH_LOGOUT',
+  REQUEST_MIC_PERMISSION: 'REQUEST_MIC_PERMISSION',
 } as const;
 
 // ── Capture Mode ───────────────────────────
@@ -29,7 +30,7 @@ export interface CropRect {
 export type EventType = 'console' | 'network' | 'navigation';
 
 // ── Recording State ────────────────────────
-export type RecordingStatus = 'idle' | 'recording' | 'stopping';
+export type RecordingStatus = 'idle' | 'recording' | 'stopping' | 'uploading';
 
 export interface RecordingState {
   status: RecordingStatus;

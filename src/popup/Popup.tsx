@@ -18,6 +18,7 @@ export function Popup() {
   const [mode, setMode] = useState<CaptureMode>('window');
   const [micEnabled, setMicEnabled] = useState(false);
   const [savedLink, setSavedLink] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     return (localStorage.getItem('devrecorder-theme') as 'dark' | 'light') || 'dark';
@@ -49,6 +50,27 @@ export function Popup() {
     return () => chrome.storage.onChanged.removeListener(listener);
   }, []);
 
+  // Listen for upload completion via storage
+  useEffect(() => {
+    const listener = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area === 'session' && changes.uploadComplete?.newValue) {
+        setUploading(false);
+      }
+    };
+    chrome.storage.onChanged.addListener(listener);
+    return () => chrome.storage.onChanged.removeListener(listener);
+  }, []);
+
+  // Check if upload already completed (popup reopened after upload finished)
+  useEffect(() => {
+    if (!uploading) return;
+    chrome.runtime.sendMessage({ type: MSG.RECORDING_STATE }).then((res) => {
+      if (res && res.status === 'idle') {
+        setUploading(false);
+      }
+    });
+  }, [uploading]);
+
   // Fetch initial state + check mic permission (only when authed)
   useEffect(() => {
     if (!authed) return;
@@ -59,6 +81,11 @@ export function Popup() {
         if (res.status === 'recording' && res.startTime) {
           startTimeRef.current = res.startTime;
           startTimer();
+        }
+        // Restore uploading state if popup was reopened during upload
+        if (res.status === 'uploading' && res.id) {
+          setSavedLink(`${FRONTEND_URL}/recordings/${res.id}`);
+          setUploading(true);
         }
       }
     });
@@ -133,6 +160,7 @@ export function Popup() {
           setElapsed('00:00');
           if (recId) {
             setSavedLink(`${FRONTEND_URL}/recordings/${recId}`);
+            setUploading(true);
           }
         } else {
           setError(result.error || 'Failed to stop');
@@ -230,14 +258,33 @@ export function Popup() {
     return (
       <div className="container">
         <div className="saved-modal">
-          <div className="saved-icon">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-              <polyline points="22 4 12 14.01 9 11.01"/>
-            </svg>
-          </div>
-          <h2 className="saved-title">Recording Saved</h2>
-          <p className="saved-subtitle">Your recording is being uploaded. Share it with the link below.</p>
+          {uploading ? (
+            <>
+              <div className="saved-icon uploading">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+              </div>
+              <h2 className="saved-title">Uploading Video...</h2>
+              <p className="saved-subtitle">Your recording is being uploaded. This may take a moment.</p>
+              <div className="upload-progress-bar">
+                <div className="upload-progress-fill" />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="saved-icon">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                  <polyline points="22 4 12 14.01 9 11.01"/>
+                </svg>
+              </div>
+              <h2 className="saved-title">Recording Saved</h2>
+              <p className="saved-subtitle">Your recording is ready. Share it with the link below.</p>
+            </>
+          )}
 
           <div className="saved-link-box">
             <span className="saved-link-text">{savedLink}</span>
@@ -256,10 +303,10 @@ export function Popup() {
           </div>
 
           <div className="saved-actions">
-            <button className="saved-open-btn" onClick={handleOpen}>
-              Open Recording
+            <button className="saved-open-btn" onClick={handleOpen} disabled={uploading}>
+              {uploading ? 'Uploading...' : 'View Recording'}
             </button>
-            <button className="saved-close-btn" onClick={() => setSavedLink(null)}>
+            <button className="saved-close-btn" onClick={() => { setSavedLink(null); setUploading(false); }}>
               New Recording
             </button>
           </div>
@@ -321,12 +368,17 @@ export function Popup() {
         <button
           className={`mic-btn ${micEnabled ? 'enabled' : ''}`}
           onClick={async () => {
+            if (micEnabled) return;
+            setError('');
             try {
-              const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-              stream.getTracks().forEach((t) => t.stop());
-              setMicEnabled(true);
+              const result = await chrome.runtime.sendMessage({ type: MSG.REQUEST_MIC_PERMISSION });
+              if (result?.granted) {
+                setMicEnabled(true);
+              } else {
+                setError(result?.error || 'Microphone permission denied. Check browser settings.');
+              }
             } catch {
-              setMicEnabled(false);
+              setError('Failed to request microphone permission.');
             }
           }}
         >
