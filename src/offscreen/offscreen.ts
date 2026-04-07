@@ -57,12 +57,12 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
           audio: { echoCancellation: true, noiseSuppression: true },
           video: false,
         });
-        console.log('DevLoom: Mic acquired —', micStream.getAudioTracks().length, 'tracks');
+        // Mic acquired
       } else {
-        console.log('DevLoom: Mic permission not granted, recording without voice');
+        // Mic permission not granted, recording without voice
       }
     } catch {
-      console.log('DevLoom: Mic unavailable, recording without voice');
+      // Mic unavailable, recording without voice
     }
 
     // Build the stream to record — keep displayStream as-is for window mode
@@ -143,7 +143,7 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       // Mix system audio + mic
       const hasSystemAudio = displayStream.getAudioTracks().length > 0;
       const hasMic = micStream && micStream.getAudioTracks().length > 0;
-      console.log(`DevLoom: Audio — system: ${hasSystemAudio}, mic: ${hasMic}`);
+      // Audio — system: ${hasSystemAudio}, mic: ${hasMic}
 
       const audioTracks: MediaStreamTrack[] = [];
       if (hasSystemAudio || hasMic) {
@@ -184,7 +184,7 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       const blob = new Blob(chunks, { type: mimeType });
       const currentRecId = recordingId!;
 
-      console.log(`DevLoom: onstop fired — blob ${blob.size} bytes, ${chunks.length} chunks`);
+      // onstop fired
 
       // Stop crop loop
       if (cropIntervalId) {
@@ -199,14 +199,12 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       // Upload video FIRST (before notifying saved, so offscreen stays alive)
       if (blob.size > 0) {
         try {
-          console.log(`DevLoom: Uploading ${blob.size} bytes via presigned URL...`);
           await api.uploadVideo(currentRecId, blob);
-          console.log('DevLoom: Video uploaded to R2');
-        } catch (err) {
-          console.error('DevLoom: Upload failed', err);
+        } catch {
+          // Upload failed
         }
       } else {
-        console.error('DevLoom: Blob is empty — nothing to upload');
+        // Blob is empty — nothing to upload
       }
 
       // Notify service worker AFTER upload completes
@@ -232,7 +230,7 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
 
     chrome.runtime.sendMessage({ type: MSG.CAPTURE_READY });
   } catch (err) {
-    console.error('DevLoom: Failed to start capture', err);
+    // Failed to start capture
     chrome.runtime.sendMessage({
       type: MSG.CAPTURE_FAILED,
       error: (err as Error).message,

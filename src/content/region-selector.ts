@@ -1,9 +1,9 @@
 (() => {
-  if (document.getElementById('devloom-region-overlay')) return;
+  if (document.getElementById('devrecorder-region-overlay')) return;
 
   // ── Overlay ─────────────────────────────────
   const overlay = document.createElement('div');
-  overlay.id = 'devloom-region-overlay';
+  overlay.id = 'devrecorder-region-overlay';
   overlay.style.cssText = `
     position:fixed;inset:0;z-index:2147483647;
     background:rgba(0,0,0,0.4);cursor:crosshair;
@@ -118,7 +118,7 @@
   // Show a dashed border around the selected region during recording
   function showRegionBorder(x: number, y: number, w: number, h: number) {
     const border = document.createElement('div');
-    border.id = 'devloom-region-border';
+    border.id = 'devrecorder-region-border';
     border.style.cssText = `
       position:fixed;left:${x}px;top:${y}px;width:${w}px;height:${h}px;
       border:2px dashed #6a7bff;border-radius:4px;
@@ -129,7 +129,7 @@
 
     // Remove when recording stops
     chrome.runtime.onMessage.addListener(function handler(msg: any) {
-      if (msg && msg.type === 'DEVLOOM_REMOVE_DRAWING') {
+      if (msg && msg.type === 'DEVRECORDER_REMOVE_DRAWING') {
         border.remove();
         chrome.runtime.onMessage.removeListener(handler);
       }

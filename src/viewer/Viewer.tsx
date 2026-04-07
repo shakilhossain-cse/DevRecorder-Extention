@@ -59,7 +59,7 @@ export function Viewer() {
       <header className="top-bar">
         <div className="logo">
           <span className="logo-icon">&#x2B24;</span>
-          <span>DevLoom</span>
+          <span>DevRecorder</span>
         </div>
         <span className="subtitle">Recordings</span>
       </header>
@@ -70,7 +70,7 @@ export function Viewer() {
         <div className="empty-state">
           <div className="empty-icon">&#x1F4F9;</div>
           <div className="empty-title">No recordings yet</div>
-          <div className="empty-text">Start a recording from the DevLoom extension popup.</div>
+          <div className="empty-text">Start a recording from the DevRecorder extension popup.</div>
         </div>
       ) : (
         <RecordingList

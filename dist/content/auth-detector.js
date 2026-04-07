@@ -1,14 +1,1 @@
-(function() {
-	//#region src/content/auth-detector.ts
-	(function() {
-		const el = document.getElementById("devrecorder-token");
-		if (!el) return;
-		const token = el.dataset.token;
-		if (!token) return;
-		chrome.runtime.sendMessage({
-			type: "AUTH_TOKEN_RECEIVED",
-			token
-		});
-	})();
-	//#endregion
-})();
+(function(){(function(){let e=document.getElementById(`devrecorder-token`);if(!e)return;let t=e.dataset.token;t&&chrome.runtime.sendMessage({type:`AUTH_TOKEN_RECEIVED`,token:t})})()})();

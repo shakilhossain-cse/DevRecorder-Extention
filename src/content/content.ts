@@ -6,7 +6,7 @@
 
   window.addEventListener('message', (event: MessageEvent) => {
     if (event.source !== window) return;
-    if (!event.data || event.data.source !== 'devloom-page-agent') return;
+    if (!event.data || event.data.source !== 'devrecorder-page-agent') return;
 
     try {
       if (event.data.type === 'console') {

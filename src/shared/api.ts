@@ -63,7 +63,7 @@ export const api = {
 
     // Small files (<10MB): use simple presigned PUT
     if (size < CHUNK_SIZE) {
-      console.log(`DevRecorder API: small file (${size} bytes), using simple upload...`);
+      // Small file — simple upload
       const urlRes = await authFetch(`${API_BASE}/recordings/${recordingId}/upload-url`, {
         method: 'POST',
       });
@@ -77,12 +77,12 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ key, videoUrl, fileSizeBytes: size }),
       });
-      console.log('DevRecorder API: simple upload done');
+      // Simple upload done
       return;
     }
 
     // Large files: multipart upload
-    console.log(`DevRecorder API: large file (${size} bytes), using multipart upload...`);
+    // Large file — multipart upload
 
     // 1. Start multipart upload
     const startRes = await authFetch(`${API_BASE}/recordings/${recordingId}/multipart/start`, {
@@ -101,7 +101,7 @@ export const api = {
       const end = Math.min(start + CHUNK_SIZE, size);
       const chunk = videoBlob.slice(start, end);
 
-      console.log(`DevRecorder API: uploading part ${partNumber}/${totalParts} (${chunk.size} bytes)...`);
+      // Uploading part ${partNumber}/${totalParts}
 
       // Get presigned URL for this part
       const partRes = await authFetch(`${API_BASE}/recordings/${recordingId}/multipart/part-url`, {
@@ -120,7 +120,7 @@ export const api = {
           etag = uploadRes.headers.get('etag');
           break;
         } catch (err) {
-          console.warn(`DevRecorder API: part ${partNumber} attempt ${attempt} failed:`, err);
+          // Part upload retry
           if (attempt === 3) throw err;
           await new Promise((r) => setTimeout(r, 1000 * attempt)); // backoff
         }
@@ -136,7 +136,7 @@ export const api = {
     });
     if (!completeRes.ok) throw new Error(`Complete multipart failed: ${completeRes.status}`);
 
-    console.log(`DevRecorder API: multipart upload done (${totalParts} parts)`);
+    // Multipart upload done
   },
 
   async sendEvents(

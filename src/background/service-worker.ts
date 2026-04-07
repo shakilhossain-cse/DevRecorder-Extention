@@ -53,9 +53,7 @@ function flushEvents(): void {
 
   const batch = eventBuffer;
   eventBuffer = [];
-  api.sendEvents(recording.id, batch).catch((err) =>
-    console.error('DevLoom: Failed to send events', err),
-  );
+  api.sendEvents(recording.id, batch).catch(() => {});
 }
 
 // ── Message Router ─────────────────────────────────────
@@ -118,16 +116,13 @@ chrome.runtime.onMessage.addListener(
         const raw = msg as any;
         if (raw.type === 'AUTH_TOKEN_RECEIVED' && raw.token) {
           chrome.storage.local.set({ apiToken: raw.token });
-          console.log('DevRecorder SW: auth token stored');
           return false;
         }
         if (raw.type === 'AUTH_LOGOUT') {
           chrome.storage.local.remove('apiToken');
-          console.log('DevRecorder SW: auth token removed');
           return false;
         }
         if (raw.type === 'NETWORK_RESPONSE' && recording.status === 'recording') {
-          console.log('DevLoom SW: got response body for', raw.data?.method, raw.data?.url?.slice(0, 60));
           handleNetworkResponse(raw.data);
         }
         return false;
@@ -255,7 +250,7 @@ function handleCaptureFailed(): void {
 
 function removeOverlayFromAllTabs(): void {
   for (const tabId of injectedTabs) {
-    chrome.tabs.sendMessage(tabId, { type: 'DEVLOOM_REMOVE_DRAWING' }).catch(() => {});
+    chrome.tabs.sendMessage(tabId, { type: 'DEVRECORDER_REMOVE_DRAWING' }).catch(() => {});
   }
   injectedTabs.clear();
 }
@@ -292,10 +287,7 @@ async function stopRecording(): Promise<{
 }
 
 function onRecordingSaved(recordingId: string, duration: number): void {
-  console.log(`DevLoom SW: recording saved — id=${recordingId}, duration=${duration}ms`);
-  api.updateRecording(recordingId, { duration }).catch((err) =>
-    console.error('DevLoom SW: Failed to update duration', err),
-  );
+  api.updateRecording(recordingId, { duration }).catch(() => {});
   recording = { status: 'idle', id: null, tabId: null, startTime: null };
   // Don't close offscreen here — it's still uploading the video.
   // It will be closed before next recording starts in ensureOffscreenDocument.
@@ -575,15 +567,15 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 // ── Service Worker Keepalive ───────────────────────────
 function startKeepalive(): void {
-  chrome.alarms.create('devloom-keepalive', { periodInMinutes: 0.4 });
+  chrome.alarms.create('devrecorder-keepalive', { periodInMinutes: 0.4 });
 }
 
 function stopKeepalive(): void {
-  chrome.alarms.clear('devloom-keepalive');
+  chrome.alarms.clear('devrecorder-keepalive');
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'devloom-keepalive' && recording.status === 'recording') {
+  if (alarm.name === 'devrecorder-keepalive' && recording.status === 'recording') {
     // Keeps the service worker alive
   }
 });

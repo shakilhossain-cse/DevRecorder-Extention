@@ -1,6 +1,6 @@
 (() => {
-  if ((window as any).__devloomPageAgent) return;
-  (window as any).__devloomPageAgent = true;
+  if ((window as any).__devrecorderPageAgent) return;
+  (window as any).__devrecorderPageAgent = true;
 
   // ── Console interception ────────────────────
   const original = {
@@ -29,7 +29,7 @@
 
       window.postMessage(
         {
-          source: 'devloom-page-agent',
+          source: 'devrecorder-page-agent',
           type: 'console',
           level,
           args: serialized,
@@ -44,7 +44,7 @@
   window.addEventListener('error', (e) => {
     window.postMessage(
       {
-        source: 'devloom-page-agent',
+        source: 'devrecorder-page-agent',
         type: 'console',
         level: 'error',
         args: [`Uncaught ${e.error?.message || e.message}`],
@@ -58,7 +58,7 @@
   window.addEventListener('unhandledrejection', (e) => {
     window.postMessage(
       {
-        source: 'devloom-page-agent',
+        source: 'devrecorder-page-agent',
         type: 'console',
         level: 'error',
         args: [`Unhandled Promise Rejection: ${e.reason?.message || e.reason}`],
@@ -97,7 +97,7 @@
       } catch { /* can't read */ }
 
       window.postMessage({
-        source: 'devloom-page-agent',
+        source: 'devrecorder-page-agent',
         type: 'network-response',
         url,
         method,
@@ -119,12 +119,12 @@
   const origSend = OrigXHR.prototype.send;
 
   OrigXHR.prototype.open = function (method: string, url: string | URL, ...rest: any[]) {
-    (this as any).__devloom = { method, url: String(url) };
+    (this as any).__devrecorder = { method, url: String(url) };
     return origOpen.apply(this, [method, url, ...rest] as any);
   };
 
   OrigXHR.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
-    const meta = (this as any).__devloom;
+    const meta = (this as any).__devrecorder;
     if (meta) {
       let requestBody: string | null = null;
       if (typeof body === 'string') requestBody = body;
@@ -139,7 +139,7 @@
         } catch { /* can't read */ }
 
         window.postMessage({
-          source: 'devloom-page-agent',
+          source: 'devrecorder-page-agent',
           type: 'network-response',
           url: meta.url,
           method: meta.method,

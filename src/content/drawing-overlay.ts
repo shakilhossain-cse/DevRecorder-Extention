@@ -1,5 +1,5 @@
 (() => {
-  if (document.getElementById('devloom-fab')) return;
+  if (document.getElementById('devrecorder-fab')) return;
 
   // ── State ─────────────────────────────────────────
   type Tool = 'pen' | 'line' | 'arrow' | 'circle' | 'rectangle' | 'square' | 'text' | 'blur';
@@ -23,7 +23,7 @@
       const tempCtx = tempCanvas.getContext('2d')!;
       tempCtx.drawImage(canvas, 0, 0, tempCanvas.width, tempCanvas.height);
       const dataUrl = tempCanvas.toDataURL('image/png');
-      chrome.storage.session.set({ devloomCanvas: dataUrl });
+      chrome.storage.session.set({ devrecorderCanvas: dataUrl });
     } catch {
       // ignore
     }
@@ -31,14 +31,14 @@
 
   function restoreCanvasState() {
     try {
-      chrome.storage.session.get('devloomCanvas', (result) => {
-        if (chrome.runtime.lastError || !result || !result.devloomCanvas) return;
+      chrome.storage.session.get('devrecorderCanvas', (result) => {
+        if (chrome.runtime.lastError || !result || !result.devrecorderCanvas) return;
         const img = new Image();
         img.onload = () => {
           // Draw at logical size, ctx.scale handles DPR
           ctx.drawImage(img, 0, 0, window.innerWidth, window.innerHeight);
         };
-        img.src = result.devloomCanvas;
+        img.src = result.devrecorderCanvas;
       });
     } catch {
       // storage.session may not be available
@@ -55,22 +55,22 @@
   // ── Inject styles ─────────────────────────────────
   const style = document.createElement('style');
   style.textContent = `
-    @keyframes devloom-fab-in {
+    @keyframes devrecorder-fab-in {
       from { transform: scale(0); opacity: 0; }
       to { transform: scale(1); opacity: 1; }
     }
-    @keyframes devloom-pulse {
+    @keyframes devrecorder-pulse {
       0% { box-shadow: 0 4px 20px rgba(106,123,255,0.4), 0 0 0 0 rgba(106,123,255,0.3); }
       70% { box-shadow: 0 4px 20px rgba(106,123,255,0.4), 0 0 0 10px rgba(106,123,255,0); }
       100% { box-shadow: 0 4px 20px rgba(106,123,255,0.4), 0 0 0 0 rgba(106,123,255,0); }
     }
-    #devloom-toolbar::-webkit-scrollbar { width: 0; }
+    #devrecorder-toolbar::-webkit-scrollbar { width: 0; }
   `;
   document.head.appendChild(style);
 
   // ── FAB ───────────────────────────────────────────
   const fab = document.createElement('div');
-  fab.id = 'devloom-fab';
+  fab.id = 'devrecorder-fab';
   fab.innerHTML = `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`;
   fab.style.cssText = `
     position:fixed;bottom:24px;left:24px;z-index:2147483647;
@@ -78,7 +78,7 @@
     background:linear-gradient(135deg,#6a7bff,#5a6bef);
     display:flex;align-items:center;justify-content:center;
     cursor:pointer;user-select:none;
-    animation:devloom-fab-in 0.3s ease-out, devloom-pulse 2s ease-out infinite;
+    animation:devrecorder-fab-in 0.3s ease-out, devrecorder-pulse 2s ease-out infinite;
     transition:transform 0.2s;
   `;
   fab.onmouseenter = () => { fab.style.transform = 'scale(1.1)'; };
@@ -86,7 +86,7 @@
 
   // ── Toolbar ───────────────────────────────────────
   const toolbar = document.createElement('div');
-  toolbar.id = 'devloom-toolbar';
+  toolbar.id = 'devrecorder-toolbar';
   toolbar.style.cssText = `
     position:fixed;bottom:24px;left:24px;z-index:2147483647;
     display:none;flex-direction:column;align-items:center;gap:4px;
@@ -95,7 +95,7 @@
     box-shadow:0 8px 40px rgba(0,0,0,0.6),0 0 0 1px rgba(255,255,255,0.06);
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     user-select:none;pointer-events:all;
-    animation:devloom-fab-in 0.2s ease-out;
+    animation:devrecorder-fab-in 0.2s ease-out;
   `;
 
   // ── Helper: icon button ───────────────────────────
@@ -247,7 +247,7 @@
     e.stopPropagation();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     // Clear saved state too
-    chrome.storage.session.remove('devloomCanvas');
+    chrome.storage.session.remove('devrecorderCanvas');
   };
   toolbar.appendChild(clearBtn);
 
@@ -265,7 +265,7 @@
 
   // ── Canvas container ──────────────────────────────
   const canvasContainer = document.createElement('div');
-  canvasContainer.id = 'devloom-canvas-container';
+  canvasContainer.id = 'devrecorder-canvas-container';
   canvasContainer.style.cssText = 'position:fixed;inset:0;z-index:2147483645;pointer-events:none;';
 
   const canvas = document.createElement('canvas');
@@ -500,7 +500,7 @@
 
   // ── Cleanup (recording stops) ─────────────────────
   function onMessage(msg: any) {
-    if (msg && msg.type === 'DEVLOOM_REMOVE_DRAWING') destroy();
+    if (msg && msg.type === 'DEVRECORDER_REMOVE_DRAWING') destroy();
   }
   chrome.runtime.onMessage.addListener(onMessage);
 
@@ -513,7 +513,7 @@
     window.removeEventListener('resize', resize);
     chrome.runtime.onMessage.removeListener(onMessage);
     // Clear saved canvas on recording stop
-    chrome.storage.session.remove('devloomCanvas');
+    chrome.storage.session.remove('devrecorderCanvas');
   }
 
   // ── Mount ─────────────────────────────────────────

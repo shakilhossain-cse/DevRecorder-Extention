@@ -23,7 +23,7 @@ function contentScriptPlugin() {
           build: {
             outDir: 'dist',
             emptyOutDir: false,
-            minify: false,
+            minify: true,
             lib: {
               entry,
               name: name.replace(/\//g, '_'),
@@ -57,7 +57,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    minify: false,
+    minify: true,
     rollupOptions: {
       input: {
         popup: resolve(__dirname, 'popup.html'),
