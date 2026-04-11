@@ -14,6 +14,8 @@ export const MSG = {
   AUTH_TOKEN_RECEIVED: 'AUTH_TOKEN_RECEIVED',
   AUTH_LOGOUT: 'AUTH_LOGOUT',
   REQUEST_MIC_PERMISSION: 'REQUEST_MIC_PERMISSION',
+  PAUSE_RECORDING: 'PAUSE_RECORDING',
+  RESUME_RECORDING: 'RESUME_RECORDING',
 } as const;
 
 // ── Capture Mode ───────────────────────────
@@ -30,7 +32,7 @@ export interface CropRect {
 export type EventType = 'console' | 'network' | 'navigation';
 
 // ── Recording State ────────────────────────
-export type RecordingStatus = 'idle' | 'recording' | 'stopping' | 'uploading';
+export type RecordingStatus = 'idle' | 'recording' | 'paused' | 'stopping' | 'uploading';
 
 export interface RecordingState {
   status: RecordingStatus;
@@ -146,6 +148,18 @@ export interface ConsoleEventMsg {
   };
 }
 
+export interface RequestMicPermissionMsg {
+  type: typeof MSG.REQUEST_MIC_PERMISSION;
+}
+
+export interface PauseRecordingMsg {
+  type: typeof MSG.PAUSE_RECORDING;
+}
+
+export interface ResumeRecordingMsg {
+  type: typeof MSG.RESUME_RECORDING;
+}
+
 export type ExtensionMessage =
   | StartRecordingMsg
   | StopRecordingMsg
@@ -157,4 +171,7 @@ export type ExtensionMessage =
   | SelectRegionMsg
   | RegionSelectedMsg
   | RegionCancelledMsg
-  | ConsoleEventMsg;
+  | ConsoleEventMsg
+  | RequestMicPermissionMsg
+  | PauseRecordingMsg
+  | ResumeRecordingMsg;

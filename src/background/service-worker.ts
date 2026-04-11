@@ -12,6 +12,32 @@ import type {
 // Allow content scripts to access chrome.storage.session
 chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
 
+// ── Sensitive header redaction ──────────────────────────
+const REDACTED = '[REDACTED]';
+const SENSITIVE_HEADERS = new Set([
+  'authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'x-auth-token',
+  'x-csrf-token',
+  'x-xsrf-token',
+  'proxy-authorization',
+  'www-authenticate',
+  'x-access-token',
+  'x-refresh-token',
+  'x-session-id',
+  'x-forwarded-for',
+]);
+
+function redactHeaders(headers: Record<string, string>): Record<string, string> {
+  const clean: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    clean[name] = SENSITIVE_HEADERS.has(name.toLowerCase()) ? REDACTED : value;
+  }
+  return clean;
+}
+
 // ── State ──────────────────────────────────────────────
 let recording: RecordingState = {
   status: 'idle',
@@ -125,6 +151,32 @@ chrome.runtime.onMessage.addListener(
         if (recording.status === 'recording') {
           handleConsoleEvent(msg.data);
         }
+        return false;
+
+      case MSG.PAUSE_RECORDING:
+        if (recording.status === 'recording') {
+          recording.status = 'paused';
+          chrome.runtime.sendMessage({ type: MSG.PAUSE_RECORDING }).catch(() => {});
+          chrome.action.setBadgeText({ text: '⏸' });
+          // Notify all injected tabs
+          for (const tabId of injectedTabs) {
+            chrome.tabs.sendMessage(tabId, { type: 'DEVRECORDER_PAUSED' }).catch(() => {});
+          }
+        }
+        sendResponse({ success: true });
+        return false;
+
+      case MSG.RESUME_RECORDING:
+        if (recording.status === 'paused') {
+          recording.status = 'recording';
+          chrome.runtime.sendMessage({ type: MSG.RESUME_RECORDING }).catch(() => {});
+          chrome.action.setBadgeText({ text: 'REC' });
+          chrome.action.setBadgeBackgroundColor({ color: '#dc3232' });
+          for (const tabId of injectedTabs) {
+            chrome.tabs.sendMessage(tabId, { type: 'DEVRECORDER_RESUMED' }).catch(() => {});
+          }
+        }
+        sendResponse({ success: true });
         return false;
 
       case MSG.REQUEST_MIC_PERMISSION:
@@ -301,7 +353,7 @@ async function stopRecording(): Promise<{
   recordingId?: string | null;
   error?: string;
 }> {
-  if (recording.status !== 'recording') {
+  if (recording.status !== 'recording' && recording.status !== 'paused') {
     return { success: false, error: 'Not recording' };
   }
 
@@ -407,7 +459,7 @@ function onSendHeaders(
   for (const h of details.requestHeaders) {
     if (h.name && h.value) headers[h.name] = h.value;
   }
-  req.requestHeaders = headers;
+  req.requestHeaders = redactHeaders(headers);
 }
 
 function onHeadersReceived(
@@ -421,7 +473,7 @@ function onHeadersReceived(
   for (const h of details.responseHeaders) {
     if (h.name && h.value) headers[h.name] = h.value;
   }
-  req.responseHeaders = headers;
+  req.responseHeaders = redactHeaders(headers);
   return undefined;
 }
 

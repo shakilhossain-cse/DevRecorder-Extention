@@ -22,6 +22,22 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
 
+    if (msg.type === MSG.PAUSE_RECORDING) {
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.pause();
+      }
+      sendResponse({ success: true });
+      return false;
+    }
+
+    if (msg.type === MSG.RESUME_RECORDING) {
+      if (mediaRecorder && mediaRecorder.state === 'paused') {
+        mediaRecorder.resume();
+      }
+      sendResponse({ success: true });
+      return false;
+    }
+
   }
 );
 

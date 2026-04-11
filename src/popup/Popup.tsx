@@ -84,7 +84,7 @@ export function Popup() {
         }
         // Restore uploading state if popup was reopened during upload
         if (res.status === 'uploading' && res.id) {
-          setSavedLink(`${FRONTEND_URL}/recordings/${res.id}`);
+          setSavedLink(`${FRONTEND_URL}/share/${res.id}`);
           setUploading(true);
         }
       }
@@ -150,7 +150,7 @@ export function Popup() {
         } else {
           setError(result.error || 'Failed to start');
         }
-      } else if (state.status === 'recording') {
+      } else if (state.status === 'recording' || state.status === 'paused') {
         const recId = state.id;
         const result = await chrome.runtime.sendMessage({ type: MSG.STOP_RECORDING });
 
@@ -159,7 +159,7 @@ export function Popup() {
           stopTimer();
           setElapsed('00:00');
           if (recId) {
-            setSavedLink(`${FRONTEND_URL}/recordings/${recId}`);
+            setSavedLink(`${FRONTEND_URL}/share/${recId}`);
             setUploading(true);
           }
         } else {

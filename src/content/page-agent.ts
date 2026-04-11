@@ -2,6 +2,32 @@
   if ((window as any).__devrecorderPageAgent) return;
   (window as any).__devrecorderPageAgent = true;
 
+  // ── Sensitive body redaction ──────────────
+  const REDACTED = '[REDACTED]';
+  const SENSITIVE_KEYS = /^(password|passwd|secret|token|access_token|refresh_token|api_key|apikey|api_secret|authorization|credit_card|card_number|cvv|ssn|private_key)$/i;
+
+  function redactBody(raw: string | null): string | null {
+    if (!raw) return raw;
+    try {
+      const obj = JSON.parse(raw);
+      return JSON.stringify(redactObj(obj));
+    } catch {
+      return raw; // not JSON, return as-is
+    }
+  }
+
+  function redactObj(val: unknown): unknown {
+    if (Array.isArray(val)) return val.map(redactObj);
+    if (val && typeof val === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+        out[k] = SENSITIVE_KEYS.test(k) ? REDACTED : redactObj(v);
+      }
+      return out;
+    }
+    return val;
+  }
+
   // ── Console interception ────────────────────
   const original = {
     log: console.log.bind(console),
@@ -111,8 +137,8 @@
         url,
         method,
         status: response.status,
-        requestBody,
-        responseBody,
+        requestBody: redactBody(requestBody),
+        responseBody: redactBody(responseBody),
         timestamp: Date.now(),
       }, '*');
 
@@ -153,8 +179,8 @@
           url: meta.url,
           method: meta.method,
           status: this.status,
-          requestBody,
-          responseBody,
+          requestBody: redactBody(requestBody),
+          responseBody: redactBody(responseBody),
           timestamp: Date.now(),
         }, '*');
       });

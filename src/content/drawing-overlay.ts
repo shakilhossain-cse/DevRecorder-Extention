@@ -68,21 +68,123 @@
   `;
   document.head.appendChild(style);
 
-  // ── FAB ───────────────────────────────────────────
+  // ── Recording Control Bar ────────────────────────────
+  let isPaused = false;
+  let elapsedSeconds = 0;
+  let timerInterval: ReturnType<typeof setInterval> | null = null;
+
+  function formatTime(totalSec: number): string {
+    const m = Math.floor(totalSec / 60).toString().padStart(2, '0');
+    const s = (totalSec % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  }
+
+  const controlBar = document.createElement('div');
+  controlBar.id = 'devrecorder-control-bar';
+  controlBar.style.cssText = `
+    position:fixed;bottom:24px;left:24px;z-index:2147483647;
+    display:flex;align-items:center;gap:6px;
+    height:40px;padding:0 10px 0 6px;
+    background:#1a1b2e;border-radius:24px;
+    box-shadow:0 4px 24px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.06);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    user-select:none;
+    animation:devrecorder-fab-in 0.3s ease-out;
+  `;
+
+  // Recording dot indicator
+  const recDot = document.createElement('div');
+  recDot.style.cssText = `
+    width:8px;height:8px;border-radius:50%;background:#ef4444;
+    animation:devrecorder-pulse 1.5s ease-out infinite;
+    flex-shrink:0;margin-left:4px;
+  `;
+
+  // Timer display
+  const timerDisplay = document.createElement('span');
+  timerDisplay.textContent = '00:00';
+  timerDisplay.style.cssText = `
+    color:#fff;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;
+    min-width:40px;text-align:center;letter-spacing:0.5px;
+  `;
+
+  // Pause/Play button
+  const pausePlayBtn = document.createElement('button');
+  const pauseIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="white"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+  const playIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>`;
+  pausePlayBtn.innerHTML = pauseIcon;
+  pausePlayBtn.title = 'Pause recording';
+  pausePlayBtn.style.cssText = `
+    width:28px;height:28px;border-radius:50%;border:none;
+    background:rgba(255,255,255,0.1);
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;transition:background 0.15s;padding:0;
+  `;
+  pausePlayBtn.onmouseenter = () => { pausePlayBtn.style.background = 'rgba(255,255,255,0.2)'; };
+  pausePlayBtn.onmouseleave = () => { pausePlayBtn.style.background = 'rgba(255,255,255,0.1)'; };
+  pausePlayBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (isPaused) {
+      chrome.runtime.sendMessage({ type: 'RESUME_RECORDING' });
+    } else {
+      chrome.runtime.sendMessage({ type: 'PAUSE_RECORDING' });
+    }
+  };
+
+  // Divider
+  const divider = document.createElement('div');
+  divider.style.cssText = 'width:1px;height:20px;background:rgba(255,255,255,0.1);flex-shrink:0;';
+
+  // Annotation (pencil) button
+  const annotateBtn = document.createElement('button');
+  annotateBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`;
+  annotateBtn.title = 'Annotation tools';
+  annotateBtn.style.cssText = `
+    width:28px;height:28px;border-radius:50%;border:none;
+    background:rgba(255,255,255,0.1);
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;transition:background 0.15s;padding:0;
+  `;
+  annotateBtn.onmouseenter = () => { annotateBtn.style.background = 'rgba(255,255,255,0.2)'; };
+  annotateBtn.onmouseleave = () => { annotateBtn.style.background = 'rgba(255,255,255,0.1)'; };
+
+  controlBar.appendChild(recDot);
+  controlBar.appendChild(timerDisplay);
+  controlBar.appendChild(pausePlayBtn);
+  controlBar.appendChild(divider);
+  controlBar.appendChild(annotateBtn);
+
+  function startTimer() {
+    if (timerInterval) return;
+    timerInterval = setInterval(() => {
+      if (!isPaused) {
+        elapsedSeconds++;
+        timerDisplay.textContent = formatTime(elapsedSeconds);
+      }
+    }, 1000);
+  }
+
+  function setPausedState(paused: boolean) {
+    isPaused = paused;
+    pausePlayBtn.innerHTML = paused ? playIcon : pauseIcon;
+    pausePlayBtn.title = paused ? 'Resume recording' : 'Pause recording';
+    recDot.style.background = paused ? '#666' : '#ef4444';
+    recDot.style.animation = paused ? 'none' : 'devrecorder-pulse 1.5s ease-out infinite';
+  }
+
+  // Listen for pause/resume messages from service worker
+  function onControlMessage(msg: any) {
+    if (msg?.type === 'DEVRECORDER_PAUSED') setPausedState(true);
+    if (msg?.type === 'DEVRECORDER_RESUMED') setPausedState(false);
+  }
+  chrome.runtime.onMessage.addListener(onControlMessage);
+
+  startTimer();
+
+  // ── FAB (hidden by default, replaced by control bar) ──
   const fab = document.createElement('div');
   fab.id = 'devrecorder-fab';
-  fab.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`;
-  fab.style.cssText = `
-    position:fixed;bottom:24px;left:24px;z-index:2147483647;
-    width:40px;height:40px;border-radius:50%;
-    background:linear-gradient(135deg,#ef4444,#dc2626);
-    display:flex;align-items:center;justify-content:center;
-    cursor:pointer;user-select:none;
-    animation:devrecorder-fab-in 0.3s ease-out, devrecorder-pulse 2s ease-out infinite;
-    transition:transform 0.2s;
-  `;
-  fab.onmouseenter = () => { fab.style.transform = 'scale(1.1)'; };
-  fab.onmouseleave = () => { fab.style.transform = 'scale(1)'; };
+  fab.style.cssText = 'display:none;';
 
   // ── Toolbar ───────────────────────────────────────
   const toolbar = document.createElement('div');
@@ -477,17 +579,17 @@
 
   // ── Expand / Collapse ─────────────────────────────
   function expandPanel() {
-    fab.style.display = 'none';
+    controlBar.style.display = 'none';
     toolbar.style.display = 'flex';
   }
 
   function collapsePanel() {
     toolbar.style.display = 'none';
-    fab.style.display = 'flex';
+    controlBar.style.display = 'flex';
     deselectTool();
   }
 
-  fab.onclick = (e) => { e.stopPropagation(); expandPanel(); };
+  annotateBtn.onclick = (e) => { e.stopPropagation(); expandPanel(); };
 
   // ── Escape key ────────────────────────────────────
   function onKeydown(e: KeyboardEvent) {
@@ -505,13 +607,16 @@
   chrome.runtime.onMessage.addListener(onMessage);
 
   function destroy() {
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
     fab.remove();
+    controlBar.remove();
     toolbar.remove();
     canvasContainer.remove();
     style.remove();
     document.removeEventListener('keydown', onKeydown);
     window.removeEventListener('resize', resize);
     chrome.runtime.onMessage.removeListener(onMessage);
+    chrome.runtime.onMessage.removeListener(onControlMessage);
     // Clear saved canvas on recording stop
     chrome.storage.session.remove('devrecorderCanvas');
   }
@@ -519,7 +624,7 @@
   // ── Mount ─────────────────────────────────────────
   window.addEventListener('resize', () => { if (currentTool) resize(); });
   document.body.appendChild(canvasContainer);
-  document.body.appendChild(fab);
+  document.body.appendChild(controlBar);
   document.body.appendChild(toolbar);
   resize();
 
