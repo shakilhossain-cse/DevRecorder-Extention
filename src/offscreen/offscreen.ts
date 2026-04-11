@@ -1,6 +1,7 @@
 import { MSG } from '@shared/types';
 import type { ExtensionMessage, CropRect } from '@shared/types';
 import { api } from '@shared/api';
+import { fixWebmDuration } from './fix-webm-duration';
 
 let mediaRecorder: MediaRecorder | null = null;
 let chunks: Blob[] = [];
@@ -182,7 +183,7 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
 
     mediaRecorder.onstop = async () => {
       const duration = Date.now() - startTime!;
-      const blob = new Blob(chunks, { type: mimeType });
+      const rawBlob = new Blob(chunks, { type: mimeType });
       const currentRecId = recordingId!;
 
       if (cropIntervalId) {
@@ -194,8 +195,10 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       if (micStream) micStream.getTracks().forEach((track) => track.stop());
       if (audioCtx) audioCtx.close();
 
-      if (blob.size > 0) {
+      if (rawBlob.size > 0) {
         try {
+          // Fix WebM duration metadata so seeking works in the player
+          const blob = await fixWebmDuration(rawBlob, duration);
           await api.uploadVideo(currentRecId, blob);
         } catch {
           // Upload failed

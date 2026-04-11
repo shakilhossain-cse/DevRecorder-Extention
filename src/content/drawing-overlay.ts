@@ -12,18 +12,30 @@
   let blurOpacity = 0.5;
   let snapshot: ImageData | null = null;
 
+  // ── Per-tab canvas key ──────────────────────────
+  // Each tab stores its own drawings so they don't bleed across tabs
+  let canvasStorageKey = 'devrecorderCanvas';
+  try {
+    // Get current tab ID to scope canvas storage per tab
+    chrome.runtime.sendMessage({ type: 'RECORDING_STATE' }, (state: any) => {
+      if (chrome.runtime.lastError) return;
+      // Use a tab-specific key; fall back to generic key
+      const tabId = state?.tabId;
+      if (tabId) canvasStorageKey = `devrecorderCanvas_${tabId}`;
+    });
+  } catch { /* ignore */ }
+
   // ── Canvas state persistence ────────────────────
-  // Save canvas as dataURL to chrome.storage.session so it survives tab switches
+  // Save canvas as dataURL to chrome.storage.session so it survives reloads
   function saveCanvasState() {
     try {
-      // Save at logical (CSS) pixel size so it restores correctly on any tab
       const tempCanvas = document.createElement('canvas');
       tempCanvas.width = window.innerWidth;
       tempCanvas.height = window.innerHeight;
       const tempCtx = tempCanvas.getContext('2d')!;
       tempCtx.drawImage(canvas, 0, 0, tempCanvas.width, tempCanvas.height);
       const dataUrl = tempCanvas.toDataURL('image/png');
-      chrome.storage.session.set({ devrecorderCanvas: dataUrl });
+      chrome.storage.session.set({ [canvasStorageKey]: dataUrl });
     } catch {
       // ignore
     }
@@ -31,14 +43,13 @@
 
   function restoreCanvasState() {
     try {
-      chrome.storage.session.get('devrecorderCanvas', (result) => {
-        if (chrome.runtime.lastError || !result || !result.devrecorderCanvas) return;
+      chrome.storage.session.get(canvasStorageKey, (result) => {
+        if (chrome.runtime.lastError || !result || !result[canvasStorageKey]) return;
         const img = new Image();
         img.onload = () => {
-          // Draw at logical size, ctx.scale handles DPR
           ctx.drawImage(img, 0, 0, window.innerWidth, window.innerHeight);
         };
-        img.src = result.devrecorderCanvas;
+        img.src = result[canvasStorageKey];
       });
     } catch {
       // storage.session may not be available
@@ -70,13 +81,19 @@
 
   // ── Recording Control Bar ────────────────────────────
   let isPaused = false;
-  let elapsedSeconds = 0;
+  let recordingStartTime = Date.now(); // will be overwritten by actual start time
+  let pausedDuration = 0; // total time spent paused
   let timerInterval: ReturnType<typeof setInterval> | null = null;
 
   function formatTime(totalSec: number): string {
     const m = Math.floor(totalSec / 60).toString().padStart(2, '0');
     const s = (totalSec % 60).toString().padStart(2, '0');
     return `${m}:${s}`;
+  }
+
+  function getElapsedSeconds(): number {
+    if (isPaused) return Math.floor((Date.now() - recordingStartTime - pausedDuration) / 1000);
+    return Math.floor((Date.now() - recordingStartTime - pausedDuration) / 1000);
   }
 
   const controlBar = document.createElement('div');
@@ -148,18 +165,37 @@
   annotateBtn.onmouseenter = () => { annotateBtn.style.background = 'rgba(255,255,255,0.2)'; };
   annotateBtn.onmouseleave = () => { annotateBtn.style.background = 'rgba(255,255,255,0.1)'; };
 
+  // Stop button
+  const stopBtn = document.createElement('button');
+  stopBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="white"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>`;
+  stopBtn.title = 'Stop recording';
+  stopBtn.style.cssText = `
+    width:28px;height:28px;border-radius:50%;border:none;
+    background:rgba(239,68,68,0.3);
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;transition:background 0.15s;padding:0;
+  `;
+  stopBtn.onmouseenter = () => { stopBtn.style.background = 'rgba(239,68,68,0.5)'; };
+  stopBtn.onmouseleave = () => { stopBtn.style.background = 'rgba(239,68,68,0.3)'; };
+  stopBtn.onclick = (e) => {
+    e.stopPropagation();
+    chrome.runtime.sendMessage({ type: 'STOP_RECORDING' });
+  };
+
   controlBar.appendChild(recDot);
   controlBar.appendChild(timerDisplay);
   controlBar.appendChild(pausePlayBtn);
+  controlBar.appendChild(stopBtn);
   controlBar.appendChild(divider);
   controlBar.appendChild(annotateBtn);
 
   function startTimer() {
     if (timerInterval) return;
+    // Update immediately, then every second
+    timerDisplay.textContent = formatTime(getElapsedSeconds());
     timerInterval = setInterval(() => {
       if (!isPaused) {
-        elapsedSeconds++;
-        timerDisplay.textContent = formatTime(elapsedSeconds);
+        timerDisplay.textContent = formatTime(getElapsedSeconds());
       }
     }, 1000);
   }
@@ -178,6 +214,20 @@
     if (msg?.type === 'DEVRECORDER_RESUMED') setPausedState(false);
   }
   chrome.runtime.onMessage.addListener(onControlMessage);
+
+  // Fetch actual recording start time and paused state from service worker
+  try {
+    chrome.runtime.sendMessage({ type: 'RECORDING_STATE' }, (state: any) => {
+      if (chrome.runtime.lastError || !state) return;
+      if (state.startTime) {
+        recordingStartTime = state.startTime;
+        timerDisplay.textContent = formatTime(getElapsedSeconds());
+      }
+      if (state.status === 'paused') {
+        setPausedState(true);
+      }
+    });
+  } catch { /* ignore */ }
 
   startTimer();
 
@@ -349,7 +399,7 @@
     e.stopPropagation();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     // Clear saved state too
-    chrome.storage.session.remove('devrecorderCanvas');
+    chrome.storage.session.remove(canvasStorageKey);
   };
   toolbar.appendChild(clearBtn);
 
@@ -617,8 +667,8 @@
     window.removeEventListener('resize', resize);
     chrome.runtime.onMessage.removeListener(onMessage);
     chrome.runtime.onMessage.removeListener(onControlMessage);
-    // Clear saved canvas on recording stop
-    chrome.storage.session.remove('devrecorderCanvas');
+    // Clear this tab's saved canvas on recording stop
+    chrome.storage.session.remove(canvasStorageKey);
   }
 
   // ── Mount ─────────────────────────────────────────

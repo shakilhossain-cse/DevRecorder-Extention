@@ -577,14 +577,38 @@ function onHistoryStateUpdated(
   });
 }
 
+// Re-inject content scripts and drawing overlay after page reload/navigation
+function onNavCompleted(
+  details: chrome.webNavigation.WebNavigationBaseCallbackDetails
+): void {
+  if (details.frameId !== 0) return;
+  if (recording.status !== 'recording' && recording.status !== 'paused') return;
+  // Re-inject on the recording tab or any previously injected tab
+  if (details.tabId !== recording.tabId && !injectedTabs.has(details.tabId)) return;
+
+  // Content script
+  chrome.scripting.executeScript({
+    target: { tabId: details.tabId },
+    files: ['content/content.js'],
+  }).catch(() => {});
+
+  // Drawing overlay (restores drawings from chrome.storage.session)
+  chrome.scripting.executeScript({
+    target: { tabId: details.tabId },
+    files: ['content/drawing-overlay.js'],
+  }).catch(() => {});
+}
+
 function startNavigationListeners(): void {
   chrome.webNavigation.onCommitted.addListener(onNavCommitted);
   chrome.webNavigation.onHistoryStateUpdated.addListener(onHistoryStateUpdated);
+  chrome.webNavigation.onCompleted.addListener(onNavCompleted);
 }
 
 function stopNavigationListeners(): void {
   chrome.webNavigation.onCommitted.removeListener(onNavCommitted);
   chrome.webNavigation.onHistoryStateUpdated.removeListener(onHistoryStateUpdated);
+  chrome.webNavigation.onCompleted.removeListener(onNavCompleted);
 }
 
 // ── Console Event Handler ──────────────────────────────

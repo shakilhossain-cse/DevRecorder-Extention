@@ -273,18 +273,6 @@ body {
   box-shadow: 0 2px 10px var(--red-shadow);
 }
 
-.btn-record.recording {
-  background: var(--record-stop-bg);
-  border: 2px solid var(--red);
-  color: var(--red-light);
-  box-shadow: 0 0 20px rgba(220, 50, 50, 0.15);
-}
-
-.btn-record.recording:hover {
-  background: var(--record-stop-hover);
-  box-shadow: 0 0 24px rgba(220, 50, 50, 0.25);
-}
-
 .btn-record.disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -293,6 +281,84 @@ body {
 
 .btn-icon {
   font-size: 11px;
+}
+
+/* ── Recording Controls (Pause + Stop) ── */
+.recording-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-pause {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 13px 20px;
+  border: 2px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-pause:hover {
+  border-color: var(--border-hover);
+  background: var(--surface-hover);
+}
+
+.btn-pause.is-paused {
+  border-color: var(--green);
+  color: var(--green);
+  background: var(--green-bg);
+}
+
+.btn-pause.is-paused:hover {
+  background: rgba(34, 197, 94, 0.15);
+}
+
+.btn-stop {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 13px 20px;
+  border: 2px solid var(--red);
+  border-radius: 12px;
+  background: var(--red-bg);
+  color: var(--red-light);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-stop:hover {
+  background: rgba(220, 50, 50, 0.2);
+  box-shadow: 0 0 20px rgba(220, 50, 50, 0.15);
+}
+
+.btn-stop.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Paused Status Badge ─────────────── */
+.status-badge.paused {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #f59e0b;
+}
+
+.status-dot.paused {
+  background: #f59e0b;
+  animation: none;
 }
 
 /* ── Error ──────────────────────────────── */

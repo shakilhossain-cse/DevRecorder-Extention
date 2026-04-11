@@ -78,7 +78,7 @@ export function Popup() {
     chrome.runtime.sendMessage({ type: MSG.RECORDING_STATE }).then((res) => {
       if (res) {
         setState(res);
-        if (res.status === 'recording' && res.startTime) {
+        if ((res.status === 'recording' || res.status === 'paused') && res.startTime) {
           startTimeRef.current = res.startTime;
           startTimer();
         }
@@ -251,7 +251,22 @@ export function Popup() {
     );
   }
 
-  const isRecording = state.status === 'recording';
+  const isRecording = state.status === 'recording' || state.status === 'paused';
+  const isPaused = state.status === 'paused';
+
+  const handlePauseResume = async () => {
+    try {
+      if (isPaused) {
+        await chrome.runtime.sendMessage({ type: MSG.RESUME_RECORDING });
+        setState((s) => ({ ...s, status: 'recording' }));
+      } else {
+        await chrome.runtime.sendMessage({ type: MSG.PAUSE_RECORDING });
+        setState((s) => ({ ...s, status: 'paused' }));
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
 
   // ── Saved modal ────────────────────────
   if (savedLink) {
@@ -324,9 +339,9 @@ export function Popup() {
           <span className="logo-icon">&#x2B24;</span>
           <span className="logo-text">DevRecorder</span>
         </div>
-        <div className={`status-badge ${isRecording ? 'recording' : ''}`}>
-          <span className={`status-dot ${isRecording ? 'recording' : ''}`} />
-          <span>{isRecording ? 'Recording' : 'Ready'}</span>
+        <div className={`status-badge ${isRecording ? (isPaused ? 'paused' : 'recording') : ''}`}>
+          <span className={`status-dot ${isRecording ? (isPaused ? 'paused' : 'recording') : ''}`} />
+          <span>{isRecording ? (isPaused ? 'Paused' : 'Recording') : 'Ready'}</span>
         </div>
       </div>
 
@@ -393,14 +408,43 @@ export function Popup() {
 
       {/* Main Actions */}
       <div className="actions">
-        <button
-          className={`btn-record ${isRecording ? 'recording' : ''} ${loading ? 'disabled' : ''}`}
-          onClick={handleRecord}
-          disabled={loading}
-        >
-          <span className="btn-icon">{isRecording ? '■' : '●'}</span>
-          <span>{isRecording ? 'Stop Recording' : 'Start Recording'}</span>
-        </button>
+        {isRecording ? (
+          <div className="recording-controls">
+            <button
+              className={`btn-pause ${isPaused ? 'is-paused' : ''}`}
+              onClick={handlePauseResume}
+            >
+              {isPaused ? (
+                <>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                  <span>Resume</span>
+                </>
+              ) : (
+                <>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                  <span>Pause</span>
+                </>
+              )}
+            </button>
+            <button
+              className={`btn-stop ${loading ? 'disabled' : ''}`}
+              onClick={handleRecord}
+              disabled={loading}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+              <span>Stop</span>
+            </button>
+          </div>
+        ) : (
+          <button
+            className={`btn-record ${loading ? 'disabled' : ''}`}
+            onClick={handleRecord}
+            disabled={loading}
+          >
+            <span className="btn-icon">●</span>
+            <span>Start Recording</span>
+          </button>
+        )}
       </div>
 
       {error && <div className="error">{error}</div>}
