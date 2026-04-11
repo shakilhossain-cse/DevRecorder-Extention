@@ -7,8 +7,7 @@
     "dev": "vite build --watch",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "zip": "cd dist && zip -r ../devrecorder.zip .",
-    "publish": "npm run build && npm run zip && chrome-webstore-upload upload --source devrecorder.zip --auto-publish"
+    "publish": "node -e \"const v=require('./public/manifest.json').version; const {execSync}=require('child_process'); execSync('git tag ext-v'+v+' && git push origin ext-v'+v, {stdio:'inherit'});\""
   },
   "keywords": [],
   "author": "",
@@ -24,7 +23,6 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
-    "chrome-webstore-upload-cli": "^3.5.0",
     "typescript": "^6.0.2",
     "vite": "^8.0.3"
   }
