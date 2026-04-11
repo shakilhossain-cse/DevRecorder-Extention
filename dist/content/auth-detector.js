@@ -1,1 +1,0 @@
-(function(){(function(){let e=document.getElementById(`devrecorder-token`);if(!e)return;let t=e.dataset.token;t&&chrome.runtime.sendMessage({type:`AUTH_TOKEN_RECEIVED`,token:t})})()})();
