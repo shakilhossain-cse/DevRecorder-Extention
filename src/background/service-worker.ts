@@ -12,6 +12,9 @@ import type {
 // Allow content scripts to access chrome.storage.session
 chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
 
+// Redirect to feedback page when user uninstalls the extension
+chrome.runtime.setUninstallURL('https://www.devrecorder.com/uninstall');
+
 // ── Sensitive header redaction ──────────────────────────
 const REDACTED = '[REDACTED]';
 const SENSITIVE_HEADERS = new Set([
