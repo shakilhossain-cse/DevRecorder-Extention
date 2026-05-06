@@ -2,6 +2,18 @@
   if ((window as any).__devrecorderPageAgent) return;
   (window as any).__devrecorderPageAgent = true;
 
+  // ── Recording state: skip all heavy work when not recording ──
+  // Controlled by content.ts via postMessage
+  let active = false;
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data) return;
+    if (e.data.source === 'devrecorder-control') {
+      if (e.data.action === 'start') active = true;
+      if (e.data.action === 'stop') active = false;
+    }
+  });
+
   // ── Sensitive body redaction ──────────────
   const REDACTED = '[REDACTED]';
   const SENSITIVE_KEYS = /^(password|passwd|secret|token|access_token|refresh_token|api_key|apikey|api_secret|authorization|credit_card|card_number|cvv|ssn|private_key)$/i;
@@ -12,7 +24,7 @@
       const obj = JSON.parse(raw);
       return JSON.stringify(redactObj(obj));
     } catch {
-      return raw; // not JSON, return as-is
+      return raw;
     }
   }
 
@@ -42,6 +54,7 @@
   levels.forEach((level) => {
     console[level] = function (...args: unknown[]) {
       original[level](...args);
+      if (!active) return; // ← skip when not recording
 
       const serialized = args.map((arg) => {
         try {
@@ -68,6 +81,7 @@
   });
 
   window.addEventListener('error', (e) => {
+    if (!active) return;
     window.postMessage(
       {
         source: 'devrecorder-page-agent',
@@ -82,6 +96,7 @@
   });
 
   window.addEventListener('unhandledrejection', (e) => {
+    if (!active) return;
     window.postMessage(
       {
         source: 'devrecorder-page-agent',
@@ -95,52 +110,80 @@
     );
   });
 
-  // ── Fetch interception (capture response body) ──
+  // ── Helpers ──────────────────────────────────
+  function resolveUrl(raw: string): string {
+    try { return new URL(raw, location.href).href; } catch { return raw; }
+  }
+
+  function extractBody(body: any): string | null {
+    if (!body) return null;
+    if (typeof body === 'string') return body;
+    if (body instanceof URLSearchParams) return body.toString();
+    if (body instanceof FormData) {
+      const obj: Record<string, string> = {};
+      body.forEach((v, k) => { obj[k] = typeof v === 'string' ? v : `[File: ${v.name}]`; });
+      return JSON.stringify(obj);
+    }
+    if (body instanceof ArrayBuffer || body instanceof Uint8Array) {
+      try { return new TextDecoder().decode(body); } catch { return '[Binary data]'; }
+    }
+    return null;
+  }
+
+  // ── Fetch interception ──────────────────────
   const originalFetch = window.fetch.bind(window);
 
   window.fetch = async function (...args: Parameters<typeof fetch>) {
+    if (!active) return originalFetch(...args); // ← pass through when not recording
+
     const input = args[0];
     const init = args[1];
 
-    // Extract metadata WITHOUT creating a new Request (which would consume the body)
-    const url = typeof input === 'string'
+    const rawUrl = typeof input === 'string'
       ? input
       : input instanceof URL
         ? input.toString()
         : input instanceof Request
           ? input.url
           : String(input);
-    const method = init?.method || (input instanceof Request ? input.method : 'GET');
+    const url = resolveUrl(rawUrl);
+    const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
 
     let requestBody: string | null = null;
-    if (init?.body && typeof init.body === 'string') {
-      requestBody = init.body;
+    if (init?.body) {
+      requestBody = extractBody(init.body);
+    } else if (input instanceof Request && input.method !== 'GET' && input.method !== 'HEAD') {
+      try {
+        const clonedReq = input.clone();
+        requestBody = await clonedReq.text();
+      } catch { /* body already consumed */ }
     }
 
     try {
       const response = await originalFetch(...args);
 
-      // Clone to read body without consuming it
-      const clone = response.clone();
-      let responseBody: string | null = null;
       try {
-        const ct = clone.headers.get('content-type') || '';
-        if (ct.includes('json') || ct.includes('text') || ct.includes('xml') || ct.includes('html')) {
-          const text = await clone.text();
-          if (text.length < 100_000) responseBody = text; // limit size
-        }
-      } catch { /* can't read */ }
+        const clone = response.clone();
+        let responseBody: string | null = null;
+        try {
+          const ct = clone.headers.get('content-type') || '';
+          if (ct.includes('json') || ct.includes('text') || ct.includes('xml') || ct.includes('html')) {
+            const text = await clone.text();
+            if (text.length < 100_000) responseBody = text;
+          }
+        } catch { /* can't read */ }
 
-      window.postMessage({
-        source: 'devrecorder-page-agent',
-        type: 'network-response',
-        url,
-        method,
-        status: response.status,
-        requestBody: redactBody(requestBody),
-        responseBody: redactBody(responseBody),
-        timestamp: Date.now(),
-      }, '*');
+        window.postMessage({
+          source: 'devrecorder-page-agent',
+          type: 'network-response',
+          url,
+          method,
+          status: response.status,
+          requestBody: redactBody(requestBody),
+          responseBody: redactBody(responseBody),
+          timestamp: Date.now(),
+        }, '*');
+      } catch { /* never break the app's fetch */ }
 
       return response;
     } catch (err) {
@@ -148,41 +191,43 @@
     }
   };
 
-  // ── XMLHttpRequest interception (capture response body) ──
+  // ── XMLHttpRequest interception ──────────────
   const OrigXHR = window.XMLHttpRequest;
   const origOpen = OrigXHR.prototype.open;
   const origSend = OrigXHR.prototype.send;
 
   OrigXHR.prototype.open = function (method: string, url: string | URL, ...rest: any[]) {
-    (this as any).__devrecorder = { method, url: String(url) };
+    (this as any).__devrecorder = { method: method.toUpperCase(), url: resolveUrl(String(url)) };
     return origOpen.apply(this, [method, url, ...rest] as any);
   };
 
   OrigXHR.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
     const meta = (this as any).__devrecorder;
-    if (meta) {
-      let requestBody: string | null = null;
-      if (typeof body === 'string') requestBody = body;
+    if (meta && active) { // ← only intercept when recording
+      const requestBody: string | null = extractBody(body);
 
       this.addEventListener('load', function () {
-        let responseBody: string | null = null;
+        if (!active) return;
         try {
-          const ct = this.getResponseHeader('content-type') || '';
-          if (ct.includes('json') || ct.includes('text') || ct.includes('xml')) {
-            if (this.responseText.length < 100_000) responseBody = this.responseText;
-          }
-        } catch { /* can't read */ }
+          let responseBody: string | null = null;
+          try {
+            const ct = this.getResponseHeader('content-type') || '';
+            if (ct.includes('json') || ct.includes('text') || ct.includes('xml')) {
+              if (this.responseText.length < 100_000) responseBody = this.responseText;
+            }
+          } catch { /* can't read */ }
 
-        window.postMessage({
-          source: 'devrecorder-page-agent',
-          type: 'network-response',
-          url: meta.url,
-          method: meta.method,
-          status: this.status,
-          requestBody: redactBody(requestBody),
-          responseBody: redactBody(responseBody),
-          timestamp: Date.now(),
-        }, '*');
+          window.postMessage({
+            source: 'devrecorder-page-agent',
+            type: 'network-response',
+            url: meta.url,
+            method: meta.method,
+            status: this.status,
+            requestBody: redactBody(requestBody),
+            responseBody: redactBody(responseBody),
+            timestamp: Date.now(),
+          }, '*');
+        } catch { /* never break the app's XHR */ }
       });
     }
     return origSend.apply(this, [body] as any);

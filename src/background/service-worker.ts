@@ -66,9 +66,15 @@ const pendingRequests = new Map<string, PendingRequest>();
 let eventBuffer: { type: string; relativeTime: number; data: Record<string, any> }[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 const FLUSH_INTERVAL = 2000;
+const MAX_BUFFER_SIZE = 500;
 
 function queueEvent(type: string, relativeTime: number, data: Record<string, any>): void {
   if (!recording.id) return;
+
+  // Cap buffer to prevent unbounded growth if API is slow/down
+  if (eventBuffer.length >= MAX_BUFFER_SIZE) {
+    eventBuffer.shift();
+  }
   eventBuffer.push({ type, relativeTime, data });
 
   if (!flushTimer) {
@@ -301,6 +307,14 @@ async function beginRecording(
       // Content script may already be injected via manifest
     }
 
+    // Activate page-agent on this tab (it starts inactive to avoid perf overhead)
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => { window.postMessage({ source: 'devrecorder-control', action: 'start' }, '*'); },
+      });
+    } catch { /* non-critical */ }
+
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
@@ -340,12 +354,23 @@ function handleCaptureFailed(): void {
   stopNavigationListeners();
   chrome.action.setBadgeText({ text: '' });
   stopKeepalive();
+  // Clear event buffer
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  eventBuffer = [];
   recording = { status: 'idle', id: null, tabId: null, startTime: null };
+}
+
+function deactivatePageAgent(tabId: number): void {
+  chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => { window.postMessage({ source: 'devrecorder-control', action: 'stop' }, '*'); },
+  }).catch(() => {});
 }
 
 function removeOverlayFromAllTabs(): void {
   for (const tabId of injectedTabs) {
     chrome.tabs.sendMessage(tabId, { type: 'DEVRECORDER_REMOVE_DRAWING' }).catch(() => {});
+    deactivatePageAgent(tabId);
   }
   injectedTabs.clear();
 }
@@ -365,6 +390,9 @@ async function stopRecording(): Promise<{
   try {
     // Flush remaining events before stopping
     flushEvents();
+
+    // Deactivate page-agent on the recording tab
+    if (recording.tabId) deactivatePageAgent(recording.tabId);
 
     await chrome.runtime.sendMessage({ type: MSG.STOP_RECORDING });
     stopNetworkListeners();
@@ -490,11 +518,14 @@ function onCompleted(
 
   const relTime = req.startTime - recording.startTime!;
 
-  // Delay slightly so page-agent's fetch/XHR interceptor has time to send response body
-  setTimeout(() => {
-    const bodyKey = `${req.method}:${req.url}`;
-    const bodies = responseBodyBuffer.get(bodyKey);
-    if (bodies) responseBodyBuffer.delete(bodyKey);
+  // Delay so page-agent's fetch/XHR interceptor has time to send response body.
+  // Try at 800ms first, then retry at 2s if response body wasn't available yet.
+  const emitEvent = (retry: boolean) => {
+    const bodies = findResponseBody(req.method, req.url);
+    if (!bodies && retry) {
+      setTimeout(() => emitEvent(false), 1500);
+      return;
+    }
 
     const data: NetworkEventData = {
       url: req.url,
@@ -512,7 +543,9 @@ function onCompleted(
     };
 
     queueEvent('network', relTime, data as unknown as Record<string, any>);
-  }, 500);
+  };
+
+  setTimeout(() => emitEvent(true), 800);
 }
 
 function onErrorOccurred(
@@ -557,6 +590,7 @@ function stopNetworkListeners(): void {
   chrome.webRequest.onCompleted.removeListener(onCompleted);
   chrome.webRequest.onErrorOccurred.removeListener(onErrorOccurred);
   pendingRequests.clear();
+  responseBodyBuffer.length = 0;
 }
 
 // ── Navigation Tracking ────────────────────────────────
@@ -629,8 +663,44 @@ function handleConsoleEvent(data: {
 }
 
 // ── Network Response Handler (from page-agent fetch/XHR intercept) ──
-// Buffer response bodies keyed by url+method+status, merged into queued events
-const responseBodyBuffer = new Map<string, { requestBody: string | null; responseBody: string | null }>();
+// Buffer response bodies, matched to webRequest events by method + URL
+interface ResponseBodyEntry {
+  method: string;
+  url: string;
+  requestBody: string | null;
+  responseBody: string | null;
+  addedAt: number;
+}
+const responseBodyBuffer: ResponseBodyEntry[] = [];
+const MAX_RESPONSE_BUFFER = 100;
+
+// Extract pathname from a URL for fuzzy matching
+function urlPathname(raw: string): string {
+  try { return new URL(raw).pathname; } catch { return raw; }
+}
+
+// Find a matching response body entry by method + URL (with fallback strategies)
+function findResponseBody(method: string, url: string): ResponseBodyEntry | null {
+  // 1. Exact match on method + full URL
+  let idx = responseBodyBuffer.findIndex(e => e.method === method && e.url === url);
+
+  // 2. Fallback: match method + pathname (ignore origin differences)
+  if (idx === -1) {
+    const path = urlPathname(url);
+    idx = responseBodyBuffer.findIndex(e => e.method === method && urlPathname(e.url) === path);
+  }
+
+  // 3. Fallback: match method + URL ends with the same path
+  if (idx === -1) {
+    const path = urlPathname(url);
+    idx = responseBodyBuffer.findIndex(e => e.method === method && e.url.endsWith(path));
+  }
+
+  if (idx === -1) return null;
+  const entry = responseBodyBuffer[idx];
+  responseBodyBuffer.splice(idx, 1);
+  return entry;
+}
 
 function handleNetworkResponse(data: {
   url: string;
@@ -640,14 +710,18 @@ function handleNetworkResponse(data: {
   responseBody: string | null;
   timestamp: number;
 }): void {
-  // Store in buffer — will be picked up by onCompleted network handler
-  const key = `${data.method}:${data.url}`;
-  responseBodyBuffer.set(key, {
+  // Evict oldest entries if buffer is full
+  while (responseBodyBuffer.length >= MAX_RESPONSE_BUFFER) {
+    responseBodyBuffer.shift();
+  }
+
+  responseBodyBuffer.push({
+    method: data.method.toUpperCase(),
+    url: data.url,
     requestBody: data.requestBody,
     responseBody: data.responseBody,
+    addedAt: Date.now(),
   });
-  // Clean old entries after 10s
-  setTimeout(() => responseBodyBuffer.delete(key), 10000);
 }
 
 // ── Tab Switch: inject drawing overlay on every active tab ──
@@ -696,14 +770,22 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 let micPermissionResolve: ((result: { granted: boolean; error?: string }) => void) | null = null;
 
 async function handleMicPermission(): Promise<{ granted: boolean; error?: string }> {
+  const display = await chrome.windows.getCurrent();
   return new Promise((resolve) => {
     micPermissionResolve = resolve;
-    // Open a small window so Chrome can show the mic permission prompt
+    // Open a small centered window so Chrome can show the mic permission prompt
+    const w = 360;
+    const h = 200;
+    const left = Math.round((display.left || 0) + ((display.width || 800) - w) / 2);
+    const top = Math.round((display.top || 0) + ((display.height || 600) - h) / 2);
     chrome.windows.create({
       url: chrome.runtime.getURL('mic-permission.html'),
       type: 'popup',
-      width: 380,
-      height: 240,
+      state: 'normal',
+      width: w,
+      height: h,
+      left,
+      top,
       focused: true,
     });
     // Timeout after 30s in case user closes the window without responding

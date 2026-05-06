@@ -19,6 +19,7 @@ export function Popup() {
   const [micEnabled, setMicEnabled] = useState(false);
   const [savedLink, setSavedLink] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [copied, setCopied] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     return (localStorage.getItem('devrecorder-theme') as 'dark' | 'light') || 'dark';
@@ -50,11 +51,17 @@ export function Popup() {
     return () => chrome.storage.onChanged.removeListener(listener);
   }, []);
 
-  // Listen for upload completion via storage
+  // Listen for upload completion and progress via storage
   useEffect(() => {
     const listener = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
-      if (area === 'session' && changes.uploadComplete?.newValue) {
-        setUploading(false);
+      if (area === 'session') {
+        if (changes.uploadComplete?.newValue) {
+          setUploading(false);
+          setUploadProgress(100);
+        }
+        if (changes.uploadProgress?.newValue != null) {
+          setUploadProgress(changes.uploadProgress.newValue as number);
+        }
       }
     };
     chrome.storage.onChanged.addListener(listener);
@@ -178,6 +185,8 @@ export function Popup() {
     navigator.clipboard.writeText(savedLink).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {
+      setError('Failed to copy link');
     });
   };
 
@@ -282,10 +291,10 @@ export function Popup() {
                   <line x1="12" y1="3" x2="12" y2="15"/>
                 </svg>
               </div>
-              <h2 className="saved-title">Uploading Video...</h2>
+              <h2 className="saved-title">Uploading Video... {uploadProgress > 0 ? `${uploadProgress}%` : ''}</h2>
               <p className="saved-subtitle">Your recording is being uploaded. This may take a moment.</p>
               <div className="upload-progress-bar">
-                <div className="upload-progress-fill" />
+                <div className="upload-progress-fill" style={uploadProgress > 0 ? { width: `${uploadProgress}%`, animation: 'none' } : undefined} />
               </div>
             </>
           ) : (
@@ -383,7 +392,10 @@ export function Popup() {
         <button
           className={`mic-btn ${micEnabled ? 'enabled' : ''}`}
           onClick={async () => {
-            if (micEnabled) return;
+            if (micEnabled) {
+              setMicEnabled(false);
+              return;
+            }
             setError('');
             try {
               const result = await chrome.runtime.sendMessage({ type: MSG.REQUEST_MIC_PERMISSION });
@@ -397,12 +409,21 @@ export function Popup() {
             }
           }}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-            <line x1="12" y1="19" x2="12" y2="22"/>
-          </svg>
-          <span>{micEnabled ? 'Microphone On' : 'Enable Microphone'}</span>
+          {micEnabled ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="1" y1="1" x2="23" y2="23"/>
+              <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V5a3 3 0 0 0-5.94-.6"/>
+              <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17"/>
+              <line x1="12" y1="19" x2="12" y2="22"/>
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="22"/>
+            </svg>
+          )}
+          <span>{micEnabled ? 'Mute Microphone' : 'Enable Microphone'}</span>
         </button>
       )}
 

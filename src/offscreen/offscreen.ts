@@ -5,9 +5,11 @@ import { fixWebmDuration } from './fix-webm-duration';
 
 let mediaRecorder: MediaRecorder | null = null;
 let chunks: Blob[] = [];
+let consolidatedBlob: Blob | null = null; // periodically merge chunks to reduce object count
 let recordingId: string | null = null;
 let startTime: number | null = null;
 let cropIntervalId: ReturnType<typeof setInterval> | null = null;
+let consolidateIntervalId: ReturnType<typeof setInterval> | null = null;
 
 chrome.runtime.onMessage.addListener(
   (msg: any, _sender: any, sendResponse: any) => {
@@ -183,12 +185,18 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
 
     mediaRecorder.onstop = async () => {
       const duration = Date.now() - startTime!;
-      const rawBlob = new Blob(chunks, { type: mimeType });
+      // Merge consolidated blob with remaining chunks
+      const parts: Blob[] = consolidatedBlob ? [consolidatedBlob, ...chunks] : chunks;
+      const rawBlob = new Blob(parts, { type: mimeType });
       const currentRecId = recordingId!;
 
       if (cropIntervalId) {
         clearInterval(cropIntervalId);
         cropIntervalId = null;
+      }
+      if (consolidateIntervalId) {
+        clearInterval(consolidateIntervalId);
+        consolidateIntervalId = null;
       }
 
       displayStream.getTracks().forEach((track) => track.stop());
@@ -196,12 +204,14 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       if (audioCtx) audioCtx.close();
 
       if (rawBlob.size > 0) {
+        const reportProgress = (pct: number) => {
+          chrome.storage.session.set({ uploadProgress: pct }).catch(() => {});
+        };
         try {
-          // Fix WebM duration metadata so seeking works in the player
           const blob = await fixWebmDuration(rawBlob, duration);
-          await api.uploadVideo(currentRecId, blob);
+          await api.uploadVideo(currentRecId, blob, reportProgress);
         } catch {
-          // Upload failed
+          // Upload failed — still send RECORDING_SAVED so UI isn't stuck
         }
       }
 
@@ -212,6 +222,7 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       });
 
       chunks = [];
+      consolidatedBlob = null;
       mediaRecorder = null;
       recordingId = null;
       startTime = null;
@@ -224,6 +235,16 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
     });
 
     mediaRecorder.start(1000);
+
+    // Periodically consolidate chunks to reduce memory fragmentation
+    // Merges many small Blobs into one larger Blob every 30 seconds
+    consolidateIntervalId = setInterval(() => {
+      if (chunks.length > 10) {
+        const parts: Blob[] = consolidatedBlob ? [consolidatedBlob, ...chunks] : chunks;
+        consolidatedBlob = new Blob(parts, { type: mimeType });
+        chunks = [];
+      }
+    }, 30_000);
 
     chrome.runtime.sendMessage({ type: MSG.CAPTURE_READY });
   } catch (err) {

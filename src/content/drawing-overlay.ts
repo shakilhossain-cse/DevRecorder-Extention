@@ -1,5 +1,5 @@
 (() => {
-  if (document.getElementById('devrecorder-fab')) return;
+  if (document.getElementById('devrecorder-control-bar')) return;
 
   // ── State ─────────────────────────────────────────
   type Tool = 'pen' | 'line' | 'arrow' | 'circle' | 'rectangle' | 'square' | 'text' | 'blur';
@@ -27,14 +27,19 @@
 
   // ── Canvas state persistence ────────────────────
   // Save canvas as dataURL to chrome.storage.session so it survives reloads
+  const MAX_CANVAS_STORAGE_BYTES = 2 * 1024 * 1024; // 2MB max per tab
+
   function saveCanvasState() {
     try {
       const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = window.innerWidth;
-      tempCanvas.height = window.innerHeight;
+      // Save at reduced resolution to limit storage size
+      const scale = Math.min(1, 1280 / window.innerWidth);
+      tempCanvas.width = Math.round(window.innerWidth * scale);
+      tempCanvas.height = Math.round(window.innerHeight * scale);
       const tempCtx = tempCanvas.getContext('2d')!;
       tempCtx.drawImage(canvas, 0, 0, tempCanvas.width, tempCanvas.height);
       const dataUrl = tempCanvas.toDataURL('image/png');
+      if (dataUrl.length > MAX_CANVAS_STORAGE_BYTES) return; // skip if too large
       chrome.storage.session.set({ [canvasStorageKey]: dataUrl });
     } catch {
       // ignore
@@ -49,7 +54,7 @@
         img.onload = () => {
           ctx.drawImage(img, 0, 0, window.innerWidth, window.innerHeight);
         };
-        img.src = result[canvasStorageKey];
+        img.src = result[canvasStorageKey] as string;
       });
     } catch {
       // storage.session may not be available
@@ -83,6 +88,7 @@
   let isPaused = false;
   let recordingStartTime = Date.now(); // will be overwritten by actual start time
   let pausedDuration = 0; // total time spent paused
+  let pauseStartedAt = 0; // when the current pause began
   let timerInterval: ReturnType<typeof setInterval> | null = null;
 
   function formatTime(totalSec: number): string {
@@ -92,8 +98,8 @@
   }
 
   function getElapsedSeconds(): number {
-    if (isPaused) return Math.floor((Date.now() - recordingStartTime - pausedDuration) / 1000);
-    return Math.floor((Date.now() - recordingStartTime - pausedDuration) / 1000);
+    const currentPause = isPaused ? Date.now() - pauseStartedAt : 0;
+    return Math.floor((Date.now() - recordingStartTime - pausedDuration - currentPause) / 1000);
   }
 
   const controlBar = document.createElement('div');
@@ -201,6 +207,14 @@
   }
 
   function setPausedState(paused: boolean) {
+    if (paused && !isPaused) {
+      // Entering pause — record when it started
+      pauseStartedAt = Date.now();
+    } else if (!paused && isPaused) {
+      // Resuming — accumulate the paused duration
+      pausedDuration += Date.now() - pauseStartedAt;
+      pauseStartedAt = 0;
+    }
     isPaused = paused;
     pausePlayBtn.innerHTML = paused ? playIcon : pauseIcon;
     pausePlayBtn.title = paused ? 'Resume recording' : 'Pause recording';
@@ -403,10 +417,16 @@
   };
   toolbar.appendChild(clearBtn);
 
+  // ── Escape hint ──────────────────────────────────
+  const escHint = document.createElement('div');
+  escHint.style.cssText = 'color:#555;font-size:9px;text-align:center;padding:2px 0;flex-shrink:0;letter-spacing:0.3px;';
+  escHint.textContent = 'ESC to close';
+  toolbar.appendChild(escHint);
+
   // ── Close button (X) — deselects tool & collapses ─
   const closeBtn = makeBtn(
     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
-    'Close'
+    'Close (Esc)'
   );
   closeBtn.onclick = (e) => {
     e.stopPropagation();
@@ -658,13 +678,14 @@
 
   function destroy() {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     fab.remove();
     controlBar.remove();
     toolbar.remove();
     canvasContainer.remove();
     style.remove();
     document.removeEventListener('keydown', onKeydown);
-    window.removeEventListener('resize', resize);
+    window.removeEventListener('resize', onResize);
     chrome.runtime.onMessage.removeListener(onMessage);
     chrome.runtime.onMessage.removeListener(onControlMessage);
     // Clear this tab's saved canvas on recording stop
@@ -672,7 +693,8 @@
   }
 
   // ── Mount ─────────────────────────────────────────
-  window.addEventListener('resize', () => { if (currentTool) resize(); });
+  function onResize() { if (currentTool) resize(); }
+  window.addEventListener('resize', onResize);
   document.body.appendChild(canvasContainer);
   document.body.appendChild(controlBar);
   document.body.appendChild(toolbar);
