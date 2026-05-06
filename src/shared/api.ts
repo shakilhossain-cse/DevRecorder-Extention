@@ -57,7 +57,7 @@ export const api = {
     });
   },
 
-  async uploadVideo(recordingId: string, videoBlob: Blob): Promise<void> {
+  async uploadVideo(recordingId: string, videoBlob: Blob, _onProgress?: (pct: number) => void): Promise<void> {
     const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB per part
     const size = videoBlob.size;
 

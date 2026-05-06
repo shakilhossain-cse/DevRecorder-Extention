@@ -62,9 +62,19 @@ export function NetworkDetail({ data, relativeTime, onClose }: Props) {
   );
 }
 
+function parseQueryParams(url: string): [string, string][] {
+  try {
+    const parsed = new URL(url);
+    return Array.from(parsed.searchParams.entries());
+  } catch {
+    return [];
+  }
+}
+
 function HeadersView({ data }: { data: NetworkEventData }) {
   const reqHeaders = Object.entries(data.requestHeaders || {});
   const resHeaders = Object.entries(data.responseHeaders || {});
+  const queryParams = parseQueryParams(data.url);
 
   return (
     <div className="net-headers">
@@ -94,7 +104,29 @@ function HeadersView({ data }: { data: NetworkEventData }) {
             <span className="net-header-value">{data.initiator}</span>
           </div>
         )}
+        <div className="net-header-row">
+          <span className="net-header-name">Status</span>
+          <span className="net-header-value">{data.status} {data.statusLine?.split(' ').slice(1).join(' ')}</span>
+        </div>
+        <div className="net-header-row">
+          <span className="net-header-name">Duration</span>
+          <span className="net-header-value">{data.duration > 0 ? `${Math.round(data.duration)}ms` : 'N/A'}</span>
+        </div>
       </div>
+
+      {queryParams.length > 0 && (
+        <div className="net-headers-section">
+          <div className="net-headers-title">
+            Query Parameters ({queryParams.length})
+          </div>
+          {queryParams.map(([name, value], i) => (
+            <div key={`${name}-${i}`} className="net-header-row">
+              <span className="net-header-name">{decodeURIComponent(name)}</span>
+              <span className="net-header-value">{decodeURIComponent(value)}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {resHeaders.length > 0 && (
         <div className="net-headers-section">
@@ -152,7 +184,7 @@ function ResponseView({ body }: { body: string | null }) {
       <div className="net-empty">
         <div className="net-empty-icon">📄</div>
         <div>Response body not available</div>
-        <div className="net-empty-hint">Response bodies are not captured during recording to avoid the browser debug bar</div>
+        <div className="net-empty-hint">No response body captured</div>
       </div>
     );
   }

@@ -59,7 +59,10 @@
       const serialized = args.map((arg) => {
         try {
           if (arg instanceof Error) return arg.stack || arg.message;
-          if (typeof arg === 'object') return JSON.stringify(arg, null, 2);
+          if (typeof arg === 'object') {
+            const str = JSON.stringify(arg, null, 2);
+            return str.length > 10_000 ? str.slice(0, 10_000) + '… [truncated]' : str;
+          }
           return String(arg);
         } catch {
           return '[Unserializable]';
@@ -167,9 +170,11 @@
         let responseBody: string | null = null;
         try {
           const ct = clone.headers.get('content-type') || '';
-          if (ct.includes('json') || ct.includes('text') || ct.includes('xml') || ct.includes('html')) {
+          const isText = ct.includes('json') || ct.includes('text') || ct.includes('xml') || ct.includes('html')
+            || ct.includes('javascript') || ct.includes('form-urlencoded') || ct === '';
+          if (isText) {
             const text = await clone.text();
-            if (text.length < 100_000) responseBody = text;
+            if (text.length > 0 && text.length < 500_000) responseBody = text;
           }
         } catch { /* can't read */ }
 
@@ -212,8 +217,10 @@
           let responseBody: string | null = null;
           try {
             const ct = this.getResponseHeader('content-type') || '';
-            if (ct.includes('json') || ct.includes('text') || ct.includes('xml')) {
-              if (this.responseText.length < 100_000) responseBody = this.responseText;
+            const isText = ct.includes('json') || ct.includes('text') || ct.includes('xml') || ct.includes('html')
+              || ct.includes('javascript') || ct.includes('form-urlencoded') || ct === '';
+            if (isText && this.responseText && this.responseText.length > 0 && this.responseText.length < 500_000) {
+              responseBody = this.responseText;
             }
           } catch { /* can't read */ }
 

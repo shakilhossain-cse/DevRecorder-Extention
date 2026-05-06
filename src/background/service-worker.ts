@@ -183,6 +183,11 @@ chrome.runtime.onMessage.addListener(
           chrome.action.setBadgeBackgroundColor({ color: '#dc3232' });
           for (const tabId of injectedTabs) {
             chrome.tabs.sendMessage(tabId, { type: 'DEVRECORDER_RESUMED' }).catch(() => {});
+            // Re-activate page-agent on resume
+            chrome.scripting.executeScript({
+              target: { tabId },
+              func: () => { window.postMessage({ source: 'devrecorder-control', action: 'start' }, '*'); },
+            }).catch(() => {});
           }
         }
         sendResponse({ success: true });
@@ -466,6 +471,14 @@ function onBeforeRequest(
     }
   }
 
+  // Evict stale pending requests older than 60s (e.g. aborted/hung requests)
+  if (pendingRequests.size > 200) {
+    const cutoff = details.timeStamp - 60_000;
+    for (const [id, req] of pendingRequests) {
+      if (req.startTime < cutoff) pendingRequests.delete(id);
+    }
+  }
+
   pendingRequests.set(details.requestId, {
     url: details.url,
     method: details.method,
@@ -519,11 +532,11 @@ function onCompleted(
   const relTime = req.startTime - recording.startTime!;
 
   // Delay so page-agent's fetch/XHR interceptor has time to send response body.
-  // Try at 800ms first, then retry at 2s if response body wasn't available yet.
-  const emitEvent = (retry: boolean) => {
+  // Try at 500ms first, retry at 1.5s, then final attempt at 3.5s.
+  const emitEvent = (retriesLeft: number) => {
     const bodies = findResponseBody(req.method, req.url);
-    if (!bodies && retry) {
-      setTimeout(() => emitEvent(false), 1500);
+    if (!bodies && retriesLeft > 0) {
+      setTimeout(() => emitEvent(retriesLeft - 1), retriesLeft > 1 ? 1000 : 2000);
       return;
     }
 
@@ -545,7 +558,7 @@ function onCompleted(
     queueEvent('network', relTime, data as unknown as Record<string, any>);
   };
 
-  setTimeout(() => emitEvent(true), 800);
+  setTimeout(() => emitEvent(2), 500);
 }
 
 function onErrorOccurred(
@@ -623,10 +636,18 @@ function onNavCompleted(
   // Re-inject on the recording tab or any previously injected tab
   if (details.tabId !== recording.tabId && !injectedTabs.has(details.tabId)) return;
 
-  // Content script
+  // Content script (re-injects page-agent too)
   chrome.scripting.executeScript({
     target: { tabId: details.tabId },
     files: ['content/content.js'],
+  }).then(() => {
+    // Activate page-agent after re-injection on navigation
+    if (recording.status === 'recording') {
+      chrome.scripting.executeScript({
+        target: { tabId: details.tabId },
+        func: () => { window.postMessage({ source: 'devrecorder-control', action: 'start' }, '*'); },
+      }).catch(() => {});
+    }
   }).catch(() => {});
 
   // Drawing overlay (restores drawings from chrome.storage.session)
@@ -672,7 +693,7 @@ interface ResponseBodyEntry {
   addedAt: number;
 }
 const responseBodyBuffer: ResponseBodyEntry[] = [];
-const MAX_RESPONSE_BUFFER = 100;
+const MAX_RESPONSE_BUFFER = 500;
 
 // Extract pathname from a URL for fuzzy matching
 function urlPathname(raw: string): string {
@@ -715,12 +736,19 @@ function handleNetworkResponse(data: {
     responseBodyBuffer.shift();
   }
 
+  // Evict stale entries older than 30s (unmatched responses)
+  const now = Date.now();
+  const STALE_MS = 30_000;
+  while (responseBodyBuffer.length > 0 && now - responseBodyBuffer[0].addedAt > STALE_MS) {
+    responseBodyBuffer.shift();
+  }
+
   responseBodyBuffer.push({
     method: data.method.toUpperCase(),
     url: data.url,
     requestBody: data.requestBody,
     responseBody: data.responseBody,
-    addedAt: Date.now(),
+    addedAt: now,
   });
 }
 
@@ -756,6 +784,14 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
       // Non-critical
     }
   }
+
+  // Always activate page-agent on the newly focused tab
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: newTabId },
+      func: () => { window.postMessage({ source: 'devrecorder-control', action: 'start' }, '*'); },
+    });
+  } catch { /* non-critical */ }
 });
 
 // ── Tab Close Handler ──────────────────────────────────
