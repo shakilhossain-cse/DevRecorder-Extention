@@ -56,12 +56,12 @@
       original[level](...args);
       if (!active) return; // ← skip when not recording
 
-      const serialized = args.map((arg) => {
+      const serialized = args.slice(0, 10).map((arg) => {
         try {
           if (arg instanceof Error) return arg.stack || arg.message;
           if (typeof arg === 'object') {
             const str = JSON.stringify(arg, null, 2);
-            return str.length > 10_000 ? str.slice(0, 10_000) + '… [truncated]' : str;
+            return str.length > 5_000 ? str.slice(0, 5_000) + '… [truncated]' : str;
           }
           return String(arg);
         } catch {
@@ -166,13 +166,15 @@
       const response = await originalFetch(...args);
 
       try {
-        const clone = response.clone();
         let responseBody: string | null = null;
         try {
-          const ct = clone.headers.get('content-type') || '';
+          const ct = response.headers.get('content-type') || '';
+          const cl = parseInt(response.headers.get('content-length') || '0', 10);
           const isText = ct.includes('json') || ct.includes('text') || ct.includes('xml') || ct.includes('html')
             || ct.includes('javascript') || ct.includes('form-urlencoded') || ct === '';
-          if (isText) {
+          // Only clone if text-like and not too large (skip binary, images, video, etc.)
+          if (isText && cl < 500_000) {
+            const clone = response.clone();
             const text = await clone.text();
             if (text.length > 0 && text.length < 500_000) responseBody = text;
           }

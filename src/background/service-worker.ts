@@ -66,7 +66,7 @@ const pendingRequests = new Map<string, PendingRequest>();
 let eventBuffer: { type: string; relativeTime: number; data: Record<string, any> }[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 const FLUSH_INTERVAL = 2000;
-const MAX_BUFFER_SIZE = 500;
+const MAX_BUFFER_SIZE = 200;
 
 function queueEvent(type: string, relativeTime: number, data: Record<string, any>): void {
   if (!recording.id) return;
@@ -425,6 +425,11 @@ function onRecordingSaved(recordingId: string, duration: number): void {
   recording = { status: 'idle', id: null, tabId: null, startTime: null };
   chrome.action.setBadgeText({ text: '' });
   stopKeepalive();
+  // Clean up buffers
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  eventBuffer = [];
+  responseBodyBuffer.length = 0;
+  pendingRequests.clear();
   // Notify popup that upload is done (via storage so it works even if popup was reopened)
   chrome.storage.session.set({ uploadComplete: { recordingId, timestamp: Date.now() } });
 }
@@ -453,6 +458,35 @@ function onBeforeRequest(
   if (details.tabId !== recording.tabId) return;
   // Only capture fetch/XHR requests, skip images, scripts, CSS, fonts etc.
   if (details.type !== 'xmlhttprequest') return;
+  // Skip CORS preflight requests — they contain no useful data
+  if (details.method === 'OPTIONS') return;
+  // Skip framework noise and analytics requests
+  try {
+    const u = new URL(details.url);
+    const p = u.pathname;
+    // Next.js RSC prefetch
+    if (u.searchParams.has('_rsc')) return;
+    // Next.js static assets
+    if (p.startsWith('/_next/')) return;
+    // Google Analytics / Tag Manager
+    if (u.hostname.includes('google-analytics.com')) return;
+    if (u.hostname.includes('googletagmanager.com')) return;
+    if (u.hostname.includes('google.com') && p.startsWith('/g/collect')) return;
+    // Facebook pixel
+    if (u.hostname.includes('facebook.com') && p.includes('/tr')) return;
+    if (u.hostname.includes('connect.facebook.net')) return;
+    // Hotjar, Clarity, Intercom, Crisp, Sentry
+    if (u.hostname.includes('hotjar.com')) return;
+    if (u.hostname.includes('clarity.ms')) return;
+    if (u.hostname.includes('intercom.io')) return;
+    if (u.hostname.includes('crisp.chat')) return;
+    if (u.hostname.includes('sentry.io')) return;
+    // Common CDNs / static assets that slip through as XHR
+    if (u.hostname.includes('cdn.jsdelivr.net')) return;
+    if (u.hostname.includes('cdnjs.cloudflare.com')) return;
+    // Browser extension internal requests
+    if (u.protocol === 'chrome-extension:') return;
+  } catch {}
 
   let requestBody: string | null = null;
   if (details.requestBody) {
@@ -471,9 +505,9 @@ function onBeforeRequest(
     }
   }
 
-  // Evict stale pending requests older than 60s (e.g. aborted/hung requests)
-  if (pendingRequests.size > 200) {
-    const cutoff = details.timeStamp - 60_000;
+  // Evict stale pending requests older than 30s (e.g. aborted/hung requests)
+  if (pendingRequests.size > 50) {
+    const cutoff = details.timeStamp - 30_000;
     for (const [id, req] of pendingRequests) {
       if (req.startTime < cutoff) pendingRequests.delete(id);
     }
@@ -693,7 +727,7 @@ interface ResponseBodyEntry {
   addedAt: number;
 }
 const responseBodyBuffer: ResponseBodyEntry[] = [];
-const MAX_RESPONSE_BUFFER = 500;
+const MAX_RESPONSE_BUFFER = 100;
 
 // Extract pathname from a URL for fuzzy matching
 function urlPathname(raw: string): string {
@@ -738,7 +772,7 @@ function handleNetworkResponse(data: {
 
   // Evict stale entries older than 30s (unmatched responses)
   const now = Date.now();
-  const STALE_MS = 30_000;
+  const STALE_MS = 10_000;
   while (responseBodyBuffer.length > 0 && now - responseBodyBuffer[0].addedAt > STALE_MS) {
     responseBodyBuffer.shift();
   }
@@ -835,6 +869,8 @@ async function handleMicPermission(): Promise<{ granted: boolean; error?: string
 }
 
 // ── Service Worker Keepalive ───────────────────────────
+const MAX_RECORDING_DURATION_MS = 60 * 60 * 1000; // 1 hour max
+
 function startKeepalive(): void {
   chrome.alarms.create('devrecorder-keepalive', { periodInMinutes: 0.4 });
 }
@@ -844,7 +880,16 @@ function stopKeepalive(): void {
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'devrecorder-keepalive' && recording.status === 'recording') {
-    // Keeps the service worker alive
+  if (alarm.name === 'devrecorder-keepalive') {
+    // Auto-stop if recording exceeds max duration
+    if (recording.status === 'recording' && recording.startTime) {
+      if (Date.now() - recording.startTime > MAX_RECORDING_DURATION_MS) {
+        stopRecording();
+      }
+    }
+    // Stop keepalive if not recording or uploading
+    if (recording.status === 'idle') {
+      stopKeepalive();
+    }
   }
 });

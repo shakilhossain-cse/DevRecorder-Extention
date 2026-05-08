@@ -8,7 +8,7 @@ let chunks: Blob[] = [];
 let consolidatedBlob: Blob | null = null; // periodically merge chunks to reduce object count
 let recordingId: string | null = null;
 let startTime: number | null = null;
-let cropIntervalId: ReturnType<typeof setInterval> | null = null;
+let cropAnimId: number | null = null;
 let consolidateIntervalId: ReturnType<typeof setInterval> | null = null;
 
 chrome.runtime.onMessage.addListener(
@@ -46,7 +46,7 @@ chrome.runtime.onMessage.addListener(
 
 async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
   recordingId = recId;
-  startTime = Date.now();
+  startTime = null;
   chunks = [];
 
   try {
@@ -113,9 +113,12 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       canvas.height = sh;
       const ctx = canvas.getContext('2d')!;
 
-      cropIntervalId = setInterval(() => {
+      // Use requestAnimationFrame for efficient crop rendering (syncs with display refresh)
+      const drawCropFrame = () => {
         ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
-      }, 33);
+        cropAnimId = requestAnimationFrame(drawCropFrame);
+      };
+      cropAnimId = requestAnimationFrame(drawCropFrame);
 
       const canvasStream = canvas.captureStream(30);
 
@@ -190,9 +193,9 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       const rawBlob = new Blob(parts, { type: mimeType });
       const currentRecId = recordingId!;
 
-      if (cropIntervalId) {
-        clearInterval(cropIntervalId);
-        cropIntervalId = null;
+      if (cropAnimId) {
+        cancelAnimationFrame(cropAnimId);
+        cropAnimId = null;
       }
       if (consolidateIntervalId) {
         clearInterval(consolidateIntervalId);
@@ -235,16 +238,16 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
     });
 
     mediaRecorder.start(1000);
+    startTime = Date.now();
 
     // Periodically consolidate chunks to reduce memory fragmentation
-    // Merges many small Blobs into one larger Blob every 30 seconds
     consolidateIntervalId = setInterval(() => {
-      if (chunks.length > 10) {
+      if (chunks.length > 20) {
         const parts: Blob[] = consolidatedBlob ? [consolidatedBlob, ...chunks] : chunks;
         consolidatedBlob = new Blob(parts, { type: mimeType });
         chunks = [];
       }
-    }, 30_000);
+    }, 60_000);
 
     chrome.runtime.sendMessage({ type: MSG.CAPTURE_READY });
   } catch (err) {
@@ -256,6 +259,15 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
 }
 
 function stopMediaRecorder(): void {
+  // Clean up crop animation immediately
+  if (cropAnimId) {
+    cancelAnimationFrame(cropAnimId);
+    cropAnimId = null;
+  }
+  if (consolidateIntervalId) {
+    clearInterval(consolidateIntervalId);
+    consolidateIntervalId = null;
+  }
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
   }
