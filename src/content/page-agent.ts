@@ -203,16 +203,20 @@
   const origOpen = OrigXHR.prototype.open;
   const origSend = OrigXHR.prototype.send;
 
+  // Use WeakMap to avoid leaking properties on XHR objects
+  const xhrMeta = new WeakMap<XMLHttpRequest, { method: string; url: string }>();
+
   OrigXHR.prototype.open = function (method: string, url: string | URL, ...rest: any[]) {
-    (this as any).__devrecorder = { method: method.toUpperCase(), url: resolveUrl(String(url)) };
+    xhrMeta.set(this, { method: method.toUpperCase(), url: resolveUrl(String(url)) });
     return origOpen.apply(this, [method, url, ...rest] as any);
   };
 
   OrigXHR.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
-    const meta = (this as any).__devrecorder;
+    const meta = xhrMeta.get(this);
     if (meta && active) { // ← only intercept when recording
       const requestBody: string | null = extractBody(body);
 
+      // Use { once: true } to auto-remove listener after firing — prevents accumulation
       this.addEventListener('load', function () {
         if (!active) return;
         try {
@@ -237,7 +241,7 @@
             timestamp: Date.now(),
           }, '*');
         } catch { /* never break the app's XHR */ }
-      });
+      }, { once: true });
     }
     return origSend.apply(this, [body] as any);
   };

@@ -10,6 +10,8 @@ let recordingId: string | null = null;
 let startTime: number | null = null;
 let cropAnimId: number | null = null;
 let consolidateIntervalId: ReturnType<typeof setInterval> | null = null;
+let videoTrackEndedHandler: (() => void) | null = null;
+let activeVideoTrack: MediaStreamTrack | null = null;
 
 chrome.runtime.onMessage.addListener(
   (msg: any, _sender: any, sendResponse: any) => {
@@ -48,6 +50,7 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
   recordingId = recId;
   startTime = null;
   chunks = [];
+  let audioCtx: AudioContext | null = null;
 
   try {
     const displayStream = await navigator.mediaDevices.getDisplayMedia({
@@ -82,7 +85,6 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
     }
 
     let recordStream: MediaStream;
-    let audioCtx: AudioContext | null = null;
 
     const isRegion = cropRect && cropRect.width > 0 && cropRect.height > 0;
 
@@ -231,11 +233,14 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       startTime = null;
     };
 
-    displayStream.getVideoTracks()[0].addEventListener('ended', () => {
+    // Store handler reference so we can remove it on cleanup
+    activeVideoTrack = displayStream.getVideoTracks()[0];
+    videoTrackEndedHandler = () => {
       if (mediaRecorder && mediaRecorder.state !== 'inactive') {
         mediaRecorder.stop();
       }
-    });
+    };
+    activeVideoTrack.addEventListener('ended', videoTrackEndedHandler);
 
     mediaRecorder.start(1000);
     startTime = Date.now();
@@ -251,6 +256,15 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
 
     chrome.runtime.sendMessage({ type: MSG.CAPTURE_READY });
   } catch (err) {
+    // Clean up resources on capture failure to prevent leaks
+    if (audioCtx) audioCtx.close().catch(() => {});
+    if (cropAnimId) { cancelAnimationFrame(cropAnimId); cropAnimId = null; }
+    if (consolidateIntervalId) { clearInterval(consolidateIntervalId); consolidateIntervalId = null; }
+    if (activeVideoTrack && videoTrackEndedHandler) {
+      activeVideoTrack.removeEventListener('ended', videoTrackEndedHandler);
+      activeVideoTrack = null;
+      videoTrackEndedHandler = null;
+    }
     chrome.runtime.sendMessage({
       type: MSG.CAPTURE_FAILED,
       error: (err as Error).message,
@@ -267,6 +281,12 @@ function stopMediaRecorder(): void {
   if (consolidateIntervalId) {
     clearInterval(consolidateIntervalId);
     consolidateIntervalId = null;
+  }
+  // Remove video track listener to prevent leak across recordings
+  if (activeVideoTrack && videoTrackEndedHandler) {
+    activeVideoTrack.removeEventListener('ended', videoTrackEndedHandler);
+    activeVideoTrack = null;
+    videoTrackEndedHandler = null;
   }
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();

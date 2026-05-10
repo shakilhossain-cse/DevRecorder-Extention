@@ -38,6 +38,11 @@ export function Playback({ recordingId, onBack, onDelete }: Props) {
       const evts = await api.getEvents(recordingId);
       setEvents(evts);
     })();
+
+    // Clean up scroll pause timer on unmount
+    return () => {
+      if (scrollPauseTimerRef.current) clearTimeout(scrollPauseTimerRef.current);
+    };
   }, [recordingId]);
 
   const handleTimeUpdate = useCallback(() => {

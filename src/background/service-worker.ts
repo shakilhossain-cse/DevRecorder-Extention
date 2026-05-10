@@ -506,7 +506,7 @@ function onBeforeRequest(
   }
 
   // Evict stale pending requests older than 30s (e.g. aborted/hung requests)
-  if (pendingRequests.size > 50) {
+  if (pendingRequests.size > 20) {
     const cutoff = details.timeStamp - 30_000;
     for (const [id, req] of pendingRequests) {
       if (req.startTime < cutoff) pendingRequests.delete(id);

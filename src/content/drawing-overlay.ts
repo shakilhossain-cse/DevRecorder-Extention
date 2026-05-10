@@ -587,6 +587,9 @@
     ctx.restore();
   }
 
+  // Track active text input so destroy() can clean it up
+  let activeTextInput: HTMLInputElement | null = null;
+
   // ── Text tool ─────────────────────────────────────
   function placeText(x: number, y: number) {
     // Temporarily disable canvas so the input can receive focus/clicks
@@ -606,14 +609,16 @@
       box-shadow:0 4px 16px rgba(0,0,0,0.4);
     `;
     document.body.appendChild(input);
+    activeTextInput = input;
 
     // Need a small delay so the click event from canvas doesn't steal focus
-    setTimeout(() => input.focus(), 10);
+    setTimeout(() => { if (input.isConnected) input.focus(); }, 10);
 
     let committed = false;
     const commit = () => {
       if (committed) return;
       committed = true;
+      activeTextInput = null;
       const text = input.value.trim();
       if (text) {
         ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`;
@@ -628,7 +633,7 @@
 
     input.onkeydown = (e) => {
       if (e.key === 'Enter') { e.preventDefault(); commit(); }
-      if (e.key === 'Escape') { committed = true; input.remove(); if (currentTool) canvas.style.pointerEvents = 'all'; }
+      if (e.key === 'Escape') { committed = true; activeTextInput = null; input.remove(); if (currentTool) canvas.style.pointerEvents = 'all'; }
       e.stopPropagation();
     };
     input.onblur = commit;
@@ -679,6 +684,11 @@
   function destroy() {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    // Remove any active text input left in the DOM
+    if (activeTextInput && activeTextInput.isConnected) {
+      activeTextInput.remove();
+      activeTextInput = null;
+    }
     fab.remove();
     controlBar.remove();
     toolbar.remove();
