@@ -1,6 +1,6 @@
-# DevRecorder — Chrome Extension
+# DevRecorder  Chrome Extension
 
-A screen recorder Chrome extension built for developer debugging. Records screen video alongside console logs, network requests (headers, payloads, responses), and page navigations — all synchronized on a timeline.
+A screen recorder Chrome extension built for developer debugging. Records screen video alongside console logs, network requests (headers, payloads, responses), and page navigations  all synchronized on a timeline.
 
 **Website:** https://www.devrecorder.com
 **Manifest Version:** 3
@@ -85,19 +85,19 @@ extension/
 │   └── icons/                 # Extension icons (16/48/128)
 ├── src/
 │   ├── background/
-│   │   └── service-worker.ts  # Core orchestrator — state, webRequest, events
+│   │   └── service-worker.ts  # Core orchestrator  state, webRequest, events
 │   ├── content/
 │   │   ├── content.ts         # Message relay between page-agent and service worker
-│   │   ├── page-agent.ts      # Injected into page — intercepts fetch/XHR/console
+│   │   ├── page-agent.ts      # Injected into page  intercepts fetch/XHR/console
 │   │   ├── drawing-overlay.ts # Annotation canvas + recording control bar
 │   │   ├── region-selector.ts # Drag-to-select screen region
 │   │   └── auth-detector.ts   # Picks up auth token from devrecorder.com
 │   ├── offscreen/
-│   │   ├── offscreen.ts       # MediaRecorder — captures & uploads video
+│   │   ├── offscreen.ts       # MediaRecorder  captures & uploads video
 │   │   └── fix-webm-duration.ts # Patches WebM duration metadata for seeking
 │   ├── popup/
 │   │   ├── main.tsx           # Popup entry point
-│   │   ├── Popup.tsx          # Popup UI — start/stop/pause, mode select, mic toggle
+│   │   ├── Popup.tsx          # Popup UI  start/stop/pause, mode select, mic toggle
 │   │   └── popup.css          # Popup styles
 │   ├── viewer/
 │   │   ├── main.tsx           # Viewer entry point
@@ -109,13 +109,13 @@ extension/
 │   │   └── utils.ts           # Time/date formatting helpers
 │   ├── shared/
 │   │   ├── types.ts           # All TypeScript interfaces & message types
-│   │   ├── api.ts             # API client — CRUD recordings, upload video, send events
+│   │   ├── api.ts             # API client  CRUD recordings, upload video, send events
 │   │   └── ErrorBoundary.tsx  # React error boundary
 │   └── mic-permission.ts     # Mic permission popup script
 ├── popup.html                 # Popup HTML shell
 ├── viewer.html                # Viewer HTML shell
 ├── offscreen.html             # Offscreen document HTML shell
-├── vite.config.ts             # Build config — main build + IIFE content scripts
+├── vite.config.ts             # Build config  main build + IIFE content scripts
 ├── tsconfig.json              # TypeScript config
 └── package.json               # Dependencies & scripts
 ```
@@ -333,7 +333,7 @@ Lightweight message relay. Injected at `document_start` on all pages (via manife
 **Responsibilities:**
 - Injects page-agent.js into the page's main world (via `<script>` tag)
 - Forwards page-agent messages (console, network-response) to service worker via `chrome.runtime.sendMessage`
-- Checks recording state on injection — activates page-agent if recording is in progress
+- Checks recording state on injection  activates page-agent if recording is in progress
 
 ### 4. Page Agent
 **File:** `src/content/page-agent.ts`
@@ -347,7 +347,7 @@ Injected into the page's main world (not the content script isolated world). Thi
 - Overrides `console.log/warn/error/info/debug` to capture logs
 - Listens for `window.error` and `unhandledrejection` events
 - Redacts sensitive fields in request/response bodies (password, token, api_key, etc.)
-- Controlled by `active` flag — does zero work when not recording
+- Controlled by `active` flag  does zero work when not recording
 
 **Content-type filtering:** Only captures text-based responses (json, text, xml, html, javascript, form-urlencoded, or empty content-type). Binary responses are skipped.
 
@@ -400,7 +400,7 @@ Overlay for selecting a screen region to record.
 React SPA for browsing and playing back recordings.
 
 - **RecordingList:** Grid of recording cards with title, duration, date, share, delete
-- **Playback:** Split-panel layout — video player (left) + event timeline (right)
+- **Playback:** Split-panel layout  video player (left) + event timeline (right)
 - **EventRow:** Renders console (log level badge + message), network (method badge + URL + status + duration), or navigation (NAV badge + URL + transition type)
 - **NetworkDetail:** Tabbed panel with Headers (general info, query params, request/response headers), Payload (request body), Response (response body)
 - Auto-scroll syncs event list to video playback position
@@ -413,7 +413,7 @@ Tiny content script that runs only on `https://www.devrecorder.com/extension-aut
 ### 10. Mic Permission
 **File:** `src/mic-permission.ts`
 
-Script for a small popup window that requests microphone permission via `getUserMedia()`. Chrome requires user gesture context for mic permission — the service worker opens this popup, which requests permission and reports back.
+Script for a small popup window that requests microphone permission via `getUserMedia()`. Chrome requires user gesture context for mic permission  the service worker opens this popup, which requests permission and reports back.
 
 ---
 
@@ -501,7 +501,7 @@ MediaRecorder (WebM VP9+Opus, 2.5Mbps)
   ▼
 On Stop:
   → Merge all chunks into single Blob
-  → fixWebmDuration() — patch EBML binary for seeking
+  → fixWebmDuration()  patch EBML binary for seeking
   │
   ▼
 Upload to Cloudflare R2:

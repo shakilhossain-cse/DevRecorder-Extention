@@ -216,7 +216,7 @@
     if (meta && active) { // ← only intercept when recording
       const requestBody: string | null = extractBody(body);
 
-      // Use { once: true } to auto-remove listener after firing — prevents accumulation
+      // Use { once: true } to auto-remove listener after firing  prevents accumulation
       this.addEventListener('load', function () {
         if (!active) return;
         try {

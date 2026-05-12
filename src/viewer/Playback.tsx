@@ -58,7 +58,7 @@ export function Playback({ recordingId, onBack, onDelete }: Props) {
 
   const handleEventClick = (event: TimelineEvent) => {
     if (event.type === 'network') {
-      // Select network event to show detail panel — don't seek
+      // Select network event to show detail panel  don't seek
       setSelectedEvent(event);
       pauseScroll();
     } else {

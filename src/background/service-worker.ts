@@ -251,7 +251,7 @@ async function startRecording(
     });
   }
 
-  // Window mode — start directly
+  // Window mode  start directly
   return beginRecording(tabId, tabTitle, tabUrl);
 }
 
@@ -286,12 +286,12 @@ async function beginRecording(
         pendingCapture = { resolve, reject };
       });
     } catch (captureError) {
-      // User cancelled the screen picker or capture failed — clean up
+      // User cancelled the screen picker or capture failed  clean up
       api.deleteRecording(rec._id).catch(() => {});
       return { success: false, error: String(captureError) };
     }
 
-    // User granted permission — now start recording
+    // User granted permission  now start recording
     const actualStart = Date.now();
     recording = {
       status: 'recording',
@@ -406,7 +406,7 @@ async function stopRecording(): Promise<{
     // Remove drawing overlay from all injected tabs
     removeOverlayFromAllTabs();
 
-    // Keep keepalive running — offscreen is uploading the video
+    // Keep keepalive running  offscreen is uploading the video
     // It will be stopped when RECORDING_SAVED is received
     chrome.action.setBadgeText({ text: 'UP' });
     chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
@@ -440,7 +440,7 @@ async function ensureOffscreenDocument(): Promise<void> {
   try {
     await chrome.offscreen.closeDocument();
   } catch {
-    // No existing document — that's fine
+    // No existing document  that's fine
   }
   // Small delay to ensure cleanup is complete
   await new Promise((r) => setTimeout(r, 100));
@@ -458,7 +458,7 @@ function onBeforeRequest(
   if (details.tabId !== recording.tabId) return;
   // Only capture fetch/XHR requests, skip images, scripts, CSS, fonts etc.
   if (details.type !== 'xmlhttprequest') return;
-  // Skip CORS preflight requests — they contain no useful data
+  // Skip CORS preflight requests  they contain no useful data
   if (details.method === 'OPTIONS') return;
   // Skip framework noise and analytics requests
   try {
@@ -794,11 +794,11 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
   const newTabId = activeInfo.tabId;
 
-  // Update tracked tab — only this tab's events go to DB
+  // Update tracked tab  only this tab's events go to DB
   recording.tabId = newTabId;
 
   // Inject overlay into new tab (restores drawings from storage)
-  // Don't remove from old tab — drawings persist there too
+  // Don't remove from old tab  drawings persist there too
   if (!injectedTabs.has(newTabId)) {
     try {
       await chrome.scripting.executeScript({

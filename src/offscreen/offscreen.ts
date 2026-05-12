@@ -56,7 +56,7 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
     const displayStream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: 30 },
       audio: true,
-      // @ts-expect-error — Chrome-specific options
+      // @ts-expect-error  Chrome-specific options
       preferCurrentTab: false,
       surfaceSwitching: 'exclude',
       selfBrowserSurface: 'include',
@@ -70,7 +70,7 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       throw new Error('Please select a Window or Chrome Tab, not Entire Screen.');
     }
 
-    // Microphone — only attempt if permission already granted (offscreen can't show prompts)
+    // Microphone  only attempt if permission already granted (offscreen can't show prompts)
     let micStream: MediaStream | null = null;
     try {
       const perm = await navigator.permissions.query({ name: 'microphone' as PermissionName });
@@ -167,7 +167,7 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
       ]);
     } else {
       // ── Window mode WITHOUT mic: record displayStream directly ──
-      // No canvas, no AudioContext — native audio passthrough
+      // No canvas, no AudioContext  native audio passthrough
       recordStream = displayStream;
     }
 
@@ -216,7 +216,7 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
           const blob = await fixWebmDuration(rawBlob, duration);
           await api.uploadVideo(currentRecId, blob, reportProgress);
         } catch {
-          // Upload failed — still send RECORDING_SAVED so UI isn't stuck
+          // Upload failed  still send RECORDING_SAVED so UI isn't stuck
         }
       }
 

@@ -360,7 +360,7 @@ export function Popup() {
         {isRecording && <div className="timer-glow" />}
       </div>
 
-      {/* Mode Selector — only show when idle */}
+      {/* Mode Selector  only show when idle */}
       {!isRecording && (
         <div className="mode-selector">
           <button
@@ -387,7 +387,7 @@ export function Popup() {
         </div>
       )}
 
-      {/* Mic toggle — only show when idle */}
+      {/* Mic toggle  only show when idle */}
       {!isRecording && (
         <button
           className={`mic-btn ${micEnabled ? 'enabled' : ''}`}

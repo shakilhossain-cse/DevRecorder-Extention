@@ -61,7 +61,7 @@
     }
   }
 
-  // Debounced save — save after each draw action
+  // Debounced save  save after each draw action
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   function debouncedSave() {
     if (saveTimer) clearTimeout(saveTimer);
@@ -208,10 +208,10 @@
 
   function setPausedState(paused: boolean) {
     if (paused && !isPaused) {
-      // Entering pause — record when it started
+      // Entering pause  record when it started
       pauseStartedAt = Date.now();
     } else if (!paused && isPaused) {
-      // Resuming — accumulate the paused duration
+      // Resuming  accumulate the paused duration
       pausedDuration += Date.now() - pauseStartedAt;
       pauseStartedAt = 0;
     }
@@ -423,7 +423,7 @@
   escHint.textContent = 'ESC to close';
   toolbar.appendChild(escHint);
 
-  // ── Close button (X) — deselects tool & collapses ─
+  // ── Close button (X)  deselects tool & collapses ─
   const closeBtn = makeBtn(
     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
     'Close (Esc)'

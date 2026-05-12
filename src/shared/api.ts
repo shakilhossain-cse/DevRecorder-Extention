@@ -21,7 +21,7 @@ async function authFetch(url: string, init: RequestInit = {}): Promise<Response>
   });
 
   if (res.status === 401) {
-    // Token is invalid — clear it so popup shows login
+    // Token is invalid  clear it so popup shows login
     chrome.storage.local.remove('apiToken').catch(() => {});
   }
 
@@ -63,7 +63,7 @@ export const api = {
 
     // Small files (<10MB): use simple presigned PUT
     if (size < CHUNK_SIZE) {
-      // Small file — simple upload
+      // Small file  simple upload
       const urlRes = await authFetch(`${API_BASE}/recordings/${recordingId}/upload-url`, {
         method: 'POST',
       });
@@ -82,7 +82,7 @@ export const api = {
     }
 
     // Large files: multipart upload
-    // Large file — multipart upload
+    // Large file  multipart upload
 
     // 1. Start multipart upload
     const startRes = await authFetch(`${API_BASE}/recordings/${recordingId}/multipart/start`, {

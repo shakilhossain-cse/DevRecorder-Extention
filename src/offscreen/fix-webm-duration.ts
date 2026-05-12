@@ -68,7 +68,7 @@ export async function fixWebmDuration(blob: Blob, durationMs: number): Promise<B
       const valStart = i + DURATION_ID.length + sizeInfo.length;
 
       if (sizeInfo.value === 8) {
-        // Duration is float64 — check if it's 0 or invalid
+        // Duration is float64  check if it's 0 or invalid
         const view = new DataView(buffer, valStart, 8);
         const existing = view.getFloat64(0);
 
@@ -84,7 +84,7 @@ export async function fixWebmDuration(blob: Blob, durationMs: number): Promise<B
     }
   }
 
-  // No Duration element found — we need to inject one into the Info section
+  // No Duration element found  we need to inject one into the Info section
   // Find Info element and inject Duration after it
   for (let i = 0; i < searchLimit - 4; i++) {
     if (matchBytes(data, i, INFO_ID)) {
@@ -119,7 +119,7 @@ export async function fixWebmDuration(blob: Blob, durationMs: number): Promise<B
     }
   }
 
-  // Couldn't fix — return original
+  // Couldn't fix  return original
   return blob;
 }
 
