@@ -113,6 +113,108 @@
     );
   });
 
+  // ── DOM Interaction tracking ─────────────────
+  function describeElement(el: Element): {
+    selector: string;
+    tag: string;
+    text?: string;
+    attributes: Record<string, string>;
+    attrCount: number;
+  } {
+    const tag = el.tagName.toLowerCase();
+    const attrs: Record<string, string> = {};
+    const SHOW_ATTRS = ['type', 'class', 'id', 'name', 'href', 'src', 'placeholder', 'role', 'aria-label', 'value'];
+    let shown = 0;
+    for (const a of Array.from(el.attributes)) {
+      if (SHOW_ATTRS.includes(a.name) && a.value) {
+        let val = a.value;
+        if (val.length > 40) val = val.slice(0, 37) + '...';
+        attrs[a.name] = val;
+        shown++;
+      }
+      if (shown >= 3) break;
+    }
+
+    // Build a short CSS selector
+    let selector = tag;
+    if (attrs.id) selector += `#${attrs.id}`;
+    else if (attrs.class) {
+      const cls = attrs.class.split(/\s+/).slice(0, 2).join('.');
+      selector += `.${cls}`;
+    }
+
+    // Get visible text (short)
+    let text: string | undefined;
+    const textContent = el.textContent?.trim();
+    if (textContent && textContent.length > 0 && textContent.length < 80) {
+      text = textContent;
+    }
+
+    return {
+      selector,
+      tag,
+      text,
+      attributes: attrs,
+      attrCount: el.attributes.length,
+    };
+  }
+
+  // Click tracking
+  document.addEventListener('click', (e) => {
+    if (!active) return;
+    const target = e.target;
+    if (!(target instanceof Element)) return;
+    // Skip clicks on the devrecorder UI itself
+    if (target.closest('[data-devrecorder]')) return;
+
+    const info = describeElement(target);
+    window.postMessage({
+      source: 'devrecorder-page-agent',
+      type: 'interaction',
+      action: 'click',
+      ...info,
+      timestamp: Date.now(),
+    }, '*');
+  }, true);
+
+  // Input/typing tracking (debounced per element)
+  const inputTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
+  const inputBuffers = new WeakMap<Element, string>();
+
+  document.addEventListener('input', (e) => {
+    if (!active) return;
+    const target = e.target;
+    if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable))) return;
+
+    const el = target as Element;
+    const value = (target as HTMLInputElement).value || (target as HTMLElement).textContent || '';
+
+    // Buffer the value and debounce
+    inputBuffers.set(el, value);
+    const existing = inputTimers.get(el);
+    if (existing) clearTimeout(existing);
+
+    inputTimers.set(el, setTimeout(() => {
+      const buffered = inputBuffers.get(el) || '';
+      if (!buffered) return;
+
+      const info = describeElement(el);
+      // Truncate and partially redact typed text
+      let typedText = buffered;
+      if (typedText.length > 50) typedText = typedText.slice(0, 47) + '...';
+
+      window.postMessage({
+        source: 'devrecorder-page-agent',
+        type: 'interaction',
+        action: 'input',
+        ...info,
+        text: typedText,
+        timestamp: Date.now(),
+      }, '*');
+      inputBuffers.delete(el);
+    }, 500));
+  }, true);
+
   // ── Helpers ──────────────────────────────────
   function resolveUrl(raw: string): string {
     try { return new URL(raw, location.href).href; } catch { return raw; }

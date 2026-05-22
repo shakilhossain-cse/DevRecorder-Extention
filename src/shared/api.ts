@@ -171,4 +171,85 @@ export const api = {
   async deleteRecording(id: string): Promise<void> {
     await authFetch(`${API_BASE}/recordings/${id}`, { method: 'DELETE' });
   },
+
+  // Integrations
+  async getConnectedIntegrations(): Promise<{ clickup: boolean; trello: boolean }> {
+    try {
+      const res = await authFetch(`${API_BASE}/integrations/status`);
+      if (!res.ok) return { clickup: false, trello: false };
+      return res.json();
+    } catch {
+      return { clickup: false, trello: false };
+    }
+  },
+
+  async getClickUpLists(): Promise<{ id: string; name: string; space: string }[]> {
+    try {
+      const res = await authFetch(`${API_BASE}/integrations/clickup/workspaces`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      const lists: { id: string; name: string; space: string }[] = [];
+      for (const ws of data.workspaces || []) {
+        for (const space of ws.spaces || []) {
+          for (const list of space.lists || []) {
+            lists.push({ id: list.id, name: list.name, space: space.name });
+          }
+          for (const folder of space.folders || []) {
+            for (const list of folder.lists || []) {
+              lists.push({ id: list.id, name: `${folder.name} / ${list.name}`, space: space.name });
+            }
+          }
+        }
+      }
+      return lists;
+    } catch {
+      return [];
+    }
+  },
+
+  async getTrelloLists(): Promise<{ id: string; name: string; board: string }[]> {
+    try {
+      const res = await authFetch(`${API_BASE}/integrations/trello/boards`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      const lists: { id: string; name: string; board: string }[] = [];
+      for (const board of data.boards || []) {
+        for (const list of board.lists || []) {
+          lists.push({ id: list.id, name: list.name, board: board.name });
+        }
+      }
+      return lists;
+    } catch {
+      return [];
+    }
+  },
+
+  async createClickUpTask(data: {
+    listId: string;
+    name: string;
+    description: string;
+    recordingId?: string;
+    priority?: number;
+  }): Promise<{ task: { id: string; name: string; url: string } }> {
+    const res = await authFetch(`${API_BASE}/integrations/clickup/create-task`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error('Failed to create ClickUp task');
+    return res.json();
+  },
+
+  async createTrelloCard(data: {
+    listId: string;
+    name: string;
+    description: string;
+    recordingId?: string;
+  }): Promise<{ card: { id: string; name: string; shortUrl: string; url: string } }> {
+    const res = await authFetch(`${API_BASE}/integrations/trello/create-card`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error('Failed to create Trello card');
+    return res.json();
+  },
 };

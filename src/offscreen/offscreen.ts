@@ -21,6 +21,12 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
 
+    if (msg.type === MSG.BEGIN_TAB_CAPTURE) {
+      startTabCapture(msg.recordingId, msg.streamId);
+      sendResponse({ success: true });
+      return false;
+    }
+
     if (msg.type === MSG.STOP_RECORDING) {
       stopMediaRecorder();
       sendResponse({ success: true });
@@ -259,6 +265,155 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
     // Clean up resources on capture failure to prevent leaks
     if (audioCtx) audioCtx.close().catch(() => {});
     if (cropAnimId) { cancelAnimationFrame(cropAnimId); cropAnimId = null; }
+    if (consolidateIntervalId) { clearInterval(consolidateIntervalId); consolidateIntervalId = null; }
+    if (activeVideoTrack && videoTrackEndedHandler) {
+      activeVideoTrack.removeEventListener('ended', videoTrackEndedHandler);
+      activeVideoTrack = null;
+      videoTrackEndedHandler = null;
+    }
+    chrome.runtime.sendMessage({
+      type: MSG.CAPTURE_FAILED,
+      error: (err as Error).message,
+    });
+  }
+}
+
+async function startTabCapture(recId: string, streamId: string): Promise<void> {
+  recordingId = recId;
+  startTime = null;
+  chunks = [];
+  consolidatedBlob = null;
+  let audioCtx: AudioContext | null = null;
+
+  try {
+    // Use the streamId from tabCapture to get the tab's media stream — no picker!
+    const tabStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        mandatory: {
+          chromeMediaSource: 'tab',
+          chromeMediaSourceId: streamId,
+        },
+      } as any,
+      video: {
+        mandatory: {
+          chromeMediaSource: 'tab',
+          chromeMediaSourceId: streamId,
+        },
+      } as any,
+    });
+
+    // Microphone — only attempt if permission already granted
+    let micStream: MediaStream | null = null;
+    try {
+      const perm = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+      if (perm.state === 'granted') {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true },
+          video: false,
+        });
+      }
+    } catch {}
+
+    let recordStream: MediaStream;
+
+    if (micStream && micStream.getAudioTracks().length > 0) {
+      // Mix tab audio + mic audio
+      audioCtx = new AudioContext();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      const dest = audioCtx.createMediaStreamDestination();
+
+      const tabAudio = tabStream.getAudioTracks();
+      if (tabAudio.length > 0) {
+        audioCtx.createMediaStreamSource(new MediaStream(tabAudio)).connect(dest);
+      }
+      audioCtx.createMediaStreamSource(micStream).connect(dest);
+
+      recordStream = new MediaStream([
+        ...tabStream.getVideoTracks(),
+        ...dest.stream.getAudioTracks(),
+      ]);
+    } else {
+      recordStream = tabStream;
+    }
+
+    const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+      ? 'video/webm;codecs=vp9,opus'
+      : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+        ? 'video/webm;codecs=vp8,opus'
+        : 'video/webm';
+
+    mediaRecorder = new MediaRecorder(recordStream, {
+      mimeType,
+      videoBitsPerSecond: 2_500_000,
+    });
+
+    mediaRecorder.ondataavailable = (e: BlobEvent) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+
+    const localAudioCtx = audioCtx;
+    const localMicStream = micStream;
+
+    mediaRecorder.onstop = async () => {
+      const duration = Date.now() - startTime!;
+      const parts: Blob[] = consolidatedBlob ? [consolidatedBlob, ...chunks] : chunks;
+      const rawBlob = new Blob(parts, { type: mimeType });
+      const currentRecId = recordingId!;
+
+      if (consolidateIntervalId) {
+        clearInterval(consolidateIntervalId);
+        consolidateIntervalId = null;
+      }
+
+      tabStream.getTracks().forEach((t) => t.stop());
+      if (localMicStream) localMicStream.getTracks().forEach((t) => t.stop());
+      if (localAudioCtx) localAudioCtx.close();
+
+      if (rawBlob.size > 0) {
+        const reportProgress = (pct: number) => {
+          chrome.storage.session.set({ uploadProgress: pct }).catch(() => {});
+        };
+        try {
+          const blob = await fixWebmDuration(rawBlob, duration);
+          await api.uploadVideo(currentRecId, blob, reportProgress);
+        } catch {}
+      }
+
+      chrome.runtime.sendMessage({
+        type: MSG.RECORDING_SAVED,
+        recordingId: currentRecId,
+        duration,
+      });
+
+      chunks = [];
+      consolidatedBlob = null;
+      mediaRecorder = null;
+      recordingId = null;
+      startTime = null;
+    };
+
+    activeVideoTrack = tabStream.getVideoTracks()[0];
+    videoTrackEndedHandler = () => {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+    };
+    activeVideoTrack.addEventListener('ended', videoTrackEndedHandler);
+
+    mediaRecorder.start(1000);
+    startTime = Date.now();
+
+    consolidateIntervalId = setInterval(() => {
+      if (chunks.length > 20) {
+        const parts: Blob[] = consolidatedBlob ? [consolidatedBlob, ...chunks] : chunks;
+        consolidatedBlob = new Blob(parts, { type: mimeType });
+        chunks = [];
+      }
+    }, 60_000);
+
+    chrome.runtime.sendMessage({ type: MSG.CAPTURE_READY });
+  } catch (err) {
+    if (audioCtx) audioCtx.close().catch(() => {});
     if (consolidateIntervalId) { clearInterval(consolidateIntervalId); consolidateIntervalId = null; }
     if (activeVideoTrack && videoTrackEndedHandler) {
       activeVideoTrack.removeEventListener('ended', videoTrackEndedHandler);

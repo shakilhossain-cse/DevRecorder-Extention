@@ -13,7 +13,11 @@
     "activeTab",
     "tabs",
     "scripting",
-    "alarms"
+    "alarms",
+    "cookies",
+    "system.cpu",
+    "system.memory",
+    "tabCapture"
   ],
   "host_permissions": [
     "<all_urls>",

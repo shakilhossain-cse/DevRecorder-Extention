@@ -49,6 +49,43 @@ let recording: RecordingState = {
   startTime: null,
 };
 
+// Persist recording state to chrome.storage.session so it survives SW restarts
+function persistRecordingState(): void {
+  chrome.storage.session.set({ recordingState: { ...recording } }).catch(() => {});
+}
+
+// Restore recording state on SW startup
+async function restoreRecordingState(): Promise<void> {
+  try {
+    const { recordingState } = await chrome.storage.session.get('recordingState');
+    if (recordingState && recordingState.status !== 'idle') {
+      recording = recordingState;
+      // Resume listeners if we were recording
+      if (recording.status === 'recording' || recording.status === 'paused' || recording.status === 'countdown') {
+        startNetworkListeners();
+        startNavigationListeners();
+        startKeepalive();
+        if (recording.status === 'recording') {
+          chrome.action.setBadgeText({ text: 'REC' });
+          chrome.action.setBadgeBackgroundColor({ color: '#dc3232' });
+        } else if (recording.status === 'paused') {
+          chrome.action.setBadgeText({ text: '⏸' });
+        } else if (recording.status === 'countdown') {
+          chrome.action.setBadgeText({ text: '...' });
+          chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+        }
+      } else if (recording.status === 'uploading') {
+        chrome.action.setBadgeText({ text: 'UP' });
+        chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+        startKeepalive();
+      }
+    }
+  } catch {}
+}
+
+// Restore on SW startup
+restoreRecordingState();
+
 interface PendingRequest {
   url: string;
   method: string;
@@ -88,7 +125,14 @@ function flushEvents(): void {
 
   const batch = eventBuffer;
   eventBuffer = [];
-  api.sendEvents(recording.id, batch).catch(() => {});
+  api.sendEvents(recording.id, batch).catch((err) => {
+    // On failure, put events back for retry and persist to storage
+    eventBuffer = [...batch, ...eventBuffer];
+    persistBuffer();
+    console.warn('[DevRecorder] Flush failed, buffered for retry:', err);
+  });
+  // Clear persisted backup on successful flush attempt
+  chrome.storage.session.remove(['eventBufferBackup', 'eventBufferRecordingId']).catch(() => {});
 }
 
 // ── Message Router ─────────────────────────────────────
@@ -162,9 +206,31 @@ chrome.runtime.onMessage.addListener(
         }
         return false;
 
+      case MSG.INTERACTION_EVENT:
+        if (recording.status === 'recording') {
+          handleInteractionEvent(msg.data);
+        }
+        return false;
+
+      case MSG.COUNTDOWN_COMPLETE:
+        if (recording.status === 'countdown') {
+          recording.status = 'recording';
+          recording.startTime = Date.now();
+          persistRecordingState();
+          chrome.action.setBadgeText({ text: 'REC' });
+          chrome.action.setBadgeBackgroundColor({ color: '#dc3232' });
+          // Notify all injected tabs to start their timers
+          for (const tabId of injectedTabs) {
+            chrome.tabs.sendMessage(tabId, { type: 'DEVRECORDER_COUNTDOWN_DONE' }).catch(() => {});
+          }
+        }
+        sendResponse({ success: true });
+        return false;
+
       case MSG.PAUSE_RECORDING:
         if (recording.status === 'recording') {
           recording.status = 'paused';
+          persistRecordingState();
           chrome.runtime.sendMessage({ type: MSG.PAUSE_RECORDING }).catch(() => {});
           chrome.action.setBadgeText({ text: '⏸' });
           // Notify all injected tabs
@@ -178,6 +244,7 @@ chrome.runtime.onMessage.addListener(
       case MSG.RESUME_RECORDING:
         if (recording.status === 'paused') {
           recording.status = 'recording';
+          persistRecordingState();
           chrome.runtime.sendMessage({ type: MSG.RESUME_RECORDING }).catch(() => {});
           chrome.action.setBadgeText({ text: 'REC' });
           chrome.action.setBadgeBackgroundColor({ color: '#dc3232' });
@@ -273,12 +340,22 @@ async function beginRecording(
 
     await ensureOffscreenDocument();
 
-    // Send BEGIN_CAPTURE and wait for user to grant screen permission
-    await chrome.runtime.sendMessage({
-      type: MSG.BEGIN_CAPTURE,
-      recordingId: rec._id,
-      cropRect,
-    });
+    if (cropRect) {
+      // Region mode — needs getDisplayMedia for full-screen capture + canvas crop
+      await chrome.runtime.sendMessage({
+        type: MSG.BEGIN_CAPTURE,
+        recordingId: rec._id,
+        cropRect,
+      });
+    } else {
+      // Window/Tab mode — use tabCapture for instant recording (no picker)
+      const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+      await chrome.runtime.sendMessage({
+        type: MSG.BEGIN_TAB_CAPTURE,
+        recordingId: rec._id,
+        streamId,
+      });
+    }
 
     // Wait for CAPTURE_READY or CAPTURE_FAILED from offscreen
     try {
@@ -286,19 +363,19 @@ async function beginRecording(
         pendingCapture = { resolve, reject };
       });
     } catch (captureError) {
-      // User cancelled the screen picker or capture failed  clean up
+      // Capture failed  clean up
       api.deleteRecording(rec._id).catch(() => {});
       return { success: false, error: String(captureError) };
     }
 
-    // User granted permission  now start recording
-    const actualStart = Date.now();
+    // User granted permission — enter countdown state (like Jam.dev)
     recording = {
-      status: 'recording',
+      status: 'countdown',
       id: rec._id,
       tabId,
-      startTime: actualStart,
+      startTime: null, // will be set when countdown completes
     };
+    persistRecordingState();
 
     startNetworkListeners();
     startNavigationListeners();
@@ -330,9 +407,15 @@ async function beginRecording(
       // Non-critical
     }
 
-    chrome.action.setBadgeText({ text: 'REC' });
-    chrome.action.setBadgeBackgroundColor({ color: '#dc3232' });
+    chrome.action.setBadgeText({ text: '...' });
+    chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
     startKeepalive();
+
+    // Capture device info at recording start
+    captureDeviceInfo(tabId);
+
+    // Capture storage snapshot from the page
+    captureStorageSnapshot(tabId);
 
     return { success: true, recordingId: rec._id };
   } catch (err) {
@@ -363,6 +446,7 @@ function handleCaptureFailed(): void {
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
   eventBuffer = [];
   recording = { status: 'idle', id: null, tabId: null, startTime: null };
+  persistRecordingState();
 }
 
 function deactivatePageAgent(tabId: number): void {
@@ -386,7 +470,7 @@ async function stopRecording(): Promise<{
   recordingId?: string | null;
   error?: string;
 }> {
-  if (recording.status !== 'recording' && recording.status !== 'paused') {
+  if (recording.status !== 'recording' && recording.status !== 'paused' && recording.status !== 'countdown') {
     return { success: false, error: 'Not recording' };
   }
 
@@ -404,6 +488,7 @@ async function stopRecording(): Promise<{
     stopNavigationListeners();
 
     // Remove drawing overlay from all injected tabs
+    const savedTabId = recording.tabId;
     removeOverlayFromAllTabs();
 
     // Keep keepalive running  offscreen is uploading the video
@@ -413,6 +498,20 @@ async function stopRecording(): Promise<{
 
     const recId = recording.id;
     recording = { status: 'uploading', id: recId, tabId: null, startTime: null };
+    persistRecordingState();
+
+    // Inject the saved-modal overlay into the recording tab
+    if (savedTabId && recId) {
+      const shareLink = `https://www.devrecorder.com/share/${recId}`;
+      const viewLink = `https://www.devrecorder.com/recordings/${recId}`;
+      chrome.storage.session.set({
+        devrecorderSavedModal: { recId, shareLink, viewLink },
+      }).catch(() => {});
+      chrome.scripting.executeScript({
+        target: { tabId: savedTabId },
+        files: ['content/saved-modal.js'],
+      }).catch(() => {});
+    }
 
     return { success: true, recordingId: recId };
   } catch (err) {
@@ -423,6 +522,7 @@ async function stopRecording(): Promise<{
 function onRecordingSaved(recordingId: string, duration: number): void {
   api.updateRecording(recordingId, { duration }).catch(() => {});
   recording = { status: 'idle', id: null, tabId: null, startTime: null };
+  persistRecordingState();
   chrome.action.setBadgeText({ text: '' });
   stopKeepalive();
   // Clean up buffers
@@ -666,7 +766,7 @@ function onNavCompleted(
   details: chrome.webNavigation.WebNavigationBaseCallbackDetails
 ): void {
   if (details.frameId !== 0) return;
-  if (recording.status !== 'recording' && recording.status !== 'paused') return;
+  if (recording.status !== 'recording' && recording.status !== 'paused' && recording.status !== 'countdown') return;
   // Re-inject on the recording tab or any previously injected tab
   if (details.tabId !== recording.tabId && !injectedTabs.has(details.tabId)) return;
 
@@ -714,6 +814,25 @@ function handleConsoleEvent(data: {
     level: data.level as ConsoleEventData['level'],
     args: data.args,
     stack: data.stack || '',
+  });
+}
+
+function handleInteractionEvent(data: {
+  action: 'click' | 'input' | 'scroll' | 'focus';
+  selector: string;
+  tag: string;
+  text?: string;
+  attributes: Record<string, string>;
+  attrCount: number;
+  timestamp: number;
+}): void {
+  queueEvent('interaction', data.timestamp - recording.startTime!, {
+    action: data.action,
+    selector: data.selector,
+    tag: data.tag,
+    text: data.text,
+    attributes: data.attributes,
+    attrCount: data.attrCount,
   });
 }
 
@@ -790,7 +909,7 @@ function handleNetworkResponse(data: {
 const injectedTabs = new Set<number>();
 
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  if (recording.status !== 'recording') return;
+  if (recording.status !== 'recording' && recording.status !== 'countdown') return;
 
   const newTabId = activeInfo.tabId;
 
@@ -831,7 +950,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 // ── Tab Close Handler ──────────────────────────────────
 chrome.tabs.onRemoved.addListener((tabId) => {
   injectedTabs.delete(tabId);
-  if (recording.status === 'recording' && recording.tabId === tabId) {
+  if ((recording.status === 'recording' || recording.status === 'countdown') && recording.tabId === tabId) {
     stopRecording();
   }
 });
@@ -868,6 +987,148 @@ async function handleMicPermission(): Promise<{ granted: boolean; error?: string
   });
 }
 
+// ── Device Info Capture ──────────────────────────────
+async function captureDeviceInfo(tabId: number): Promise<void> {
+  try {
+    const [cpuInfo, memInfo] = await Promise.all([
+      chrome.system.cpu.getInfo().catch(() => null),
+      chrome.system.memory.getInfo().catch(() => null),
+    ]);
+
+    // Get browser-level info from the tab
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => ({
+        userAgent: navigator.userAgent,
+        language: navigator.language,
+        languages: navigator.languages,
+        platform: navigator.platform,
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        deviceMemory: (navigator as any).deviceMemory,
+        onLine: navigator.onLine,
+        connectionType: (navigator as any).connection?.effectiveType || null,
+        connectionDownlink: (navigator as any).connection?.downlink || null,
+        screenWidth: screen.width,
+        screenHeight: screen.height,
+        devicePixelRatio: window.devicePixelRatio,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        colorScheme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        timezoneOffset: new Date().getTimezoneOffset(),
+      }),
+    });
+
+    const browserInfo = results?.[0]?.result || {};
+
+    queueEvent('device-info', 0, {
+      ...browserInfo,
+      cpuArchName: cpuInfo?.archName || null,
+      cpuModelName: cpuInfo?.modelName || null,
+      cpuNumProcessors: cpuInfo?.numOfProcessors || null,
+      memoryCapacityBytes: memInfo?.capacity || null,
+      memoryAvailableBytes: memInfo?.availableCapacity || null,
+    });
+  } catch {
+    // Non-critical
+  }
+}
+
+// ── Storage Snapshot Capture ─────────────────────────
+async function captureStorageSnapshot(tabId: number): Promise<void> {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const SENSITIVE = /^(password|passwd|secret|token|access_token|refresh_token|api_key|apikey|api_secret|authorization|private_key)$/i;
+
+        function redactValue(key: string, val: string): string {
+          return SENSITIVE.test(key) ? '[REDACTED]' : (val.length > 500 ? val.slice(0, 500) + '…' : val);
+        }
+
+        // localStorage
+        const local: Record<string, string> = {};
+        try {
+          for (let i = 0; i < localStorage.length && i < 50; i++) {
+            const key = localStorage.key(i);
+            if (key) local[key] = redactValue(key, localStorage.getItem(key) || '');
+          }
+        } catch {}
+
+        // sessionStorage
+        const session: Record<string, string> = {};
+        try {
+          for (let i = 0; i < sessionStorage.length && i < 50; i++) {
+            const key = sessionStorage.key(i);
+            if (key) session[key] = redactValue(key, sessionStorage.getItem(key) || '');
+          }
+        } catch {}
+
+        return {
+          localStorage: local,
+          localStorageCount: localStorage.length,
+          sessionStorage: session,
+          sessionStorageCount: sessionStorage.length,
+        };
+      },
+    });
+
+    const storageData = results?.[0]?.result;
+    if (!storageData) return;
+
+    // Also capture cookies for this tab's URL
+    let cookies: { name: string; domain: string; secure: boolean; httpOnly: boolean }[] = [];
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.url) {
+        const allCookies = await chrome.cookies.getAll({ url: tab.url });
+        cookies = allCookies.slice(0, 50).map((c) => ({
+          name: c.name,
+          domain: c.domain,
+          secure: c.secure,
+          httpOnly: c.httpOnly,
+        }));
+      }
+    } catch {}
+
+    queueEvent('storage', 0, {
+      ...storageData,
+      cookies,
+      cookieCount: cookies.length,
+    });
+  } catch {
+    // Non-critical
+  }
+}
+
+// ── Offline Event Buffering ─────────────────────────
+// Persist event buffer to chrome.storage.session so events survive SW restarts
+async function persistBuffer(): Promise<void> {
+  if (eventBuffer.length === 0) return;
+  try {
+    await chrome.storage.session.set({
+      eventBufferBackup: eventBuffer,
+      eventBufferRecordingId: recording.id,
+    });
+  } catch {}
+}
+
+async function restoreBuffer(): Promise<void> {
+  try {
+    const result = await chrome.storage.session.get([
+      'eventBufferBackup',
+      'eventBufferRecordingId',
+    ]);
+    const backup = result.eventBufferBackup as typeof eventBuffer | undefined;
+    const backupRecId = result.eventBufferRecordingId as string | undefined;
+    if (backup && backup.length > 0 && backupRecId && recording.id === backupRecId) {
+      eventBuffer = [...backup, ...eventBuffer];
+    }
+    // Clear backup after restore
+    chrome.storage.session.remove(['eventBufferBackup', 'eventBufferRecordingId']);
+  } catch {}
+}
+
 // ── Service Worker Keepalive ───────────────────────────
 const MAX_RECORDING_DURATION_MS = 60 * 60 * 1000; // 1 hour max
 
@@ -887,9 +1148,25 @@ chrome.alarms.onAlarm.addListener((alarm) => {
         stopRecording();
       }
     }
+    // Persist buffer periodically during recording
+    if (recording.status === 'recording' && eventBuffer.length > 0) {
+      persistBuffer();
+    }
     // Stop keepalive if not recording or uploading
     if (recording.status === 'idle') {
       stopKeepalive();
     }
   }
 });
+
+// Restore buffered events on service worker startup (in case SW was killed mid-recording)
+chrome.storage.session.get('eventBufferRecordingId').then(({ eventBufferRecordingId }) => {
+  if (eventBufferRecordingId) {
+    // There was a recording in progress when SW died — restore buffer
+    restoreBuffer().then(() => {
+      if (eventBuffer.length > 0 && recording.id) {
+        flushEvents();
+      }
+    });
+  }
+}).catch(() => {});

@@ -72,8 +72,8 @@
   const style = document.createElement('style');
   style.textContent = `
     @keyframes devrecorder-fab-in {
-      from { transform: scale(0); opacity: 0; }
-      to { transform: scale(1); opacity: 1; }
+      from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+      to { opacity: 1; transform: translateX(-50%) translateY(0); }
     }
     @keyframes devrecorder-pulse {
       0% { box-shadow: 0 4px 20px rgba(239,68,68,0.4), 0 0 0 0 rgba(239,68,68,0.3); }
@@ -84,11 +84,88 @@
   `;
   document.head.appendChild(style);
 
+  // ── Countdown Overlay ────────────────────────────────
+  function showCountdown(): Promise<void> {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.id = 'devrecorder-countdown';
+      overlay.style.cssText = `
+        position:fixed;inset:0;z-index:2147483647;
+        display:flex;align-items:center;justify-content:center;flex-direction:column;
+        background:rgba(0,0,0,0.4);backdrop-filter:blur(4px);
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+        transition:opacity 0.2s;
+      `;
+
+      const number = document.createElement('div');
+      number.style.cssText = `
+        font-size:120px;font-weight:800;color:white;
+        text-shadow:0 4px 40px rgba(0,0,0,0.5);
+        transition:transform 0.3s ease-out,opacity 0.3s ease-out;
+      `;
+
+      const label = document.createElement('div');
+      label.style.cssText = 'font-size:16px;color:rgba(255,255,255,0.7);margin-top:8px;font-weight:500;';
+      label.textContent = 'Preparing to record';
+
+      const micInfo = document.createElement('div');
+      micInfo.style.cssText = 'font-size:13px;margin-top:12px;color:rgba(255,255,255,0.5);';
+      micInfo.innerHTML = 'Your microphone is currently <span style="color:#ef4444;font-weight:600">muted</span>.';
+
+      overlay.appendChild(number);
+      overlay.appendChild(label);
+      overlay.appendChild(micInfo);
+      document.body.appendChild(overlay);
+
+      let count = 3;
+      number.textContent = String(count);
+
+      const tick = () => {
+        if (count <= 0) {
+          overlay.style.opacity = '0';
+          setTimeout(() => overlay.remove(), 200);
+          resolve();
+          return;
+        }
+        number.textContent = String(count);
+        number.style.transform = 'scale(1.2)';
+        number.style.opacity = '1';
+        setTimeout(() => {
+          number.style.transform = 'scale(0.8)';
+          number.style.opacity = '0.3';
+        }, 600);
+        count--;
+        setTimeout(tick, 1000);
+      };
+      tick();
+    });
+  }
+
+  // State-based countdown (like Jam.dev): only show countdown when status is 'countdown'.
+  // On reload/navigation, status will already be 'recording' so countdown won't re-trigger.
+  // Use callback pattern (not await) because MV3 sendMessage Promise may resolve undefined
+  // when the listener uses synchronous sendResponse with return false.
+  try {
+    chrome.runtime.sendMessage({ type: 'RECORDING_STATE' }, (state: any) => {
+      if (chrome.runtime.lastError || !state) return;
+      if (state.status === 'countdown') {
+        isInitialStart = true;
+        showCountdown().then(() => {
+          // Add entrance animation only after countdown finishes
+          controlBar.style.animation = 'devrecorder-fab-in 0.3s ease-out';
+          chrome.runtime.sendMessage({ type: 'COUNTDOWN_COMPLETE' }).catch(() => {});
+        });
+      }
+    });
+  } catch {
+    // extension context invalidated — skip
+  }
+
   // ── Recording Control Bar ────────────────────────────
   let isPaused = false;
-  let recordingStartTime = Date.now(); // will be overwritten by actual start time
-  let pausedDuration = 0; // total time spent paused
-  let pauseStartedAt = 0; // when the current pause began
+  let recordingStartTime = Date.now();
+  let pausedDuration = 0;
+  let pauseStartedAt = 0;
   let timerInterval: ReturnType<typeof setInterval> | null = null;
 
   function formatTime(totalSec: number): string {
@@ -102,43 +179,51 @@
     return Math.floor((Date.now() - recordingStartTime - pausedDuration - currentPause) / 1000);
   }
 
+  // Track if this is an initial start (countdown) or a re-inject (reload/navigation)
+  let isInitialStart = false;
+
   const controlBar = document.createElement('div');
   controlBar.id = 'devrecorder-control-bar';
   controlBar.style.cssText = `
-    position:fixed;bottom:24px;left:24px;z-index:2147483647;
-    display:flex;align-items:center;gap:6px;
-    height:40px;padding:0 10px 0 6px;
-    background:#1a1b2e;border-radius:24px;
-    box-shadow:0 4px 24px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.06);
+    position:fixed;bottom:32px;left:50%;transform:translateX(-50%);z-index:2147483647;
+    display:flex;align-items:center;gap:8px;
+    height:48px;padding:0 14px 0 10px;
+    background:#1a1b2e;border-radius:28px;
+    box-shadow:0 8px 32px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.06);
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     user-select:none;
-    animation:devrecorder-fab-in 0.3s ease-out;
   `;
 
   // Recording dot indicator
   const recDot = document.createElement('div');
   recDot.style.cssText = `
-    width:8px;height:8px;border-radius:50%;background:#ef4444;
+    width:10px;height:10px;border-radius:50%;background:#ef4444;
     animation:devrecorder-pulse 1.5s ease-out infinite;
     flex-shrink:0;margin-left:4px;
+  `;
+
+  // "Recording in X" label
+  const recLabel = document.createElement('span');
+  recLabel.style.cssText = `
+    color:rgba(255,255,255,0.5);font-size:13px;font-weight:500;margin-right:2px;display:none;
   `;
 
   // Timer display
   const timerDisplay = document.createElement('span');
   timerDisplay.textContent = '00:00';
   timerDisplay.style.cssText = `
-    color:#fff;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;
-    min-width:40px;text-align:center;letter-spacing:0.5px;
+    color:#fff;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;
+    min-width:48px;text-align:center;letter-spacing:0.5px;
   `;
 
   // Pause/Play button
   const pausePlayBtn = document.createElement('button');
-  const pauseIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="white"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
-  const playIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>`;
+  const pauseIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="white"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+  const playIcon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>`;
   pausePlayBtn.innerHTML = pauseIcon;
   pausePlayBtn.title = 'Pause recording';
   pausePlayBtn.style.cssText = `
-    width:28px;height:28px;border-radius:50%;border:none;
+    width:34px;height:34px;border-radius:50%;border:none;
     background:rgba(255,255,255,0.1);
     display:flex;align-items:center;justify-content:center;
     cursor:pointer;transition:background 0.15s;padding:0;
@@ -154,29 +239,12 @@
     }
   };
 
-  // Divider
-  const divider = document.createElement('div');
-  divider.style.cssText = 'width:1px;height:20px;background:rgba(255,255,255,0.1);flex-shrink:0;';
-
-  // Annotation (pencil) button
-  const annotateBtn = document.createElement('button');
-  annotateBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`;
-  annotateBtn.title = 'Annotation tools';
-  annotateBtn.style.cssText = `
-    width:28px;height:28px;border-radius:50%;border:none;
-    background:rgba(255,255,255,0.1);
-    display:flex;align-items:center;justify-content:center;
-    cursor:pointer;transition:background 0.15s;padding:0;
-  `;
-  annotateBtn.onmouseenter = () => { annotateBtn.style.background = 'rgba(255,255,255,0.2)'; };
-  annotateBtn.onmouseleave = () => { annotateBtn.style.background = 'rgba(255,255,255,0.1)'; };
-
   // Stop button
   const stopBtn = document.createElement('button');
-  stopBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="white"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>`;
+  stopBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="white"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>`;
   stopBtn.title = 'Stop recording';
   stopBtn.style.cssText = `
-    width:28px;height:28px;border-radius:50%;border:none;
+    width:34px;height:34px;border-radius:50%;border:none;
     background:rgba(239,68,68,0.3);
     display:flex;align-items:center;justify-content:center;
     cursor:pointer;transition:background 0.15s;padding:0;
@@ -188,11 +256,41 @@
     chrome.runtime.sendMessage({ type: 'STOP_RECORDING' });
   };
 
+  // Divider
+  const divider = document.createElement('div');
+  divider.style.cssText = 'width:1px;height:24px;background:rgba(255,255,255,0.1);flex-shrink:0;';
+
+  // Mic mute indicator
+  const micBtn = document.createElement('button');
+  micBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V5a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17"/><line x1="12" y1="19" x2="12" y2="22"/></svg>`;
+  micBtn.title = 'Microphone muted';
+  micBtn.style.cssText = `
+    width:34px;height:34px;border-radius:50%;border:none;
+    background:rgba(255,255,255,0.05);
+    display:flex;align-items:center;justify-content:center;
+    cursor:default;padding:0;
+  `;
+
+  // Annotation (pencil) button
+  const annotateBtn = document.createElement('button');
+  annotateBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`;
+  annotateBtn.title = 'Annotation tools';
+  annotateBtn.style.cssText = `
+    width:34px;height:34px;border-radius:50%;border:none;
+    background:rgba(255,255,255,0.1);
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;transition:background 0.15s;padding:0;
+  `;
+  annotateBtn.onmouseenter = () => { annotateBtn.style.background = 'rgba(255,255,255,0.2)'; };
+  annotateBtn.onmouseleave = () => { annotateBtn.style.background = 'rgba(255,255,255,0.1)'; };
+
   controlBar.appendChild(recDot);
+  controlBar.appendChild(recLabel);
   controlBar.appendChild(timerDisplay);
   controlBar.appendChild(pausePlayBtn);
   controlBar.appendChild(stopBtn);
   controlBar.appendChild(divider);
+  controlBar.appendChild(micBtn);
   controlBar.appendChild(annotateBtn);
 
   function startTimer() {
@@ -222,14 +320,20 @@
     recDot.style.animation = paused ? 'none' : 'devrecorder-pulse 1.5s ease-out infinite';
   }
 
-  // Listen for pause/resume messages from service worker
+  // Listen for pause/resume/countdown-complete messages from service worker
   function onControlMessage(msg: any) {
     if (msg?.type === 'DEVRECORDER_PAUSED') setPausedState(true);
     if (msg?.type === 'DEVRECORDER_RESUMED') setPausedState(false);
+    if (msg?.type === 'DEVRECORDER_COUNTDOWN_DONE') {
+      // Countdown just finished — sync start time and begin timer
+      recordingStartTime = Date.now();
+      timerDisplay.textContent = '00:00';
+      startTimer();
+    }
   }
   chrome.runtime.onMessage.addListener(onControlMessage);
 
-  // Fetch actual recording start time and paused state from service worker
+  // Fetch actual recording start time and state from service worker
   try {
     chrome.runtime.sendMessage({ type: 'RECORDING_STATE' }, (state: any) => {
       if (chrome.runtime.lastError || !state) return;
@@ -240,10 +344,14 @@
       if (state.status === 'paused') {
         setPausedState(true);
       }
+      // During countdown, timer will start after COUNTDOWN_COMPLETE
+      if (state.status !== 'countdown') {
+        startTimer();
+      }
     });
-  } catch { /* ignore */ }
-
-  startTimer();
+  } catch {
+    startTimer();
+  }
 
   // ── FAB (hidden by default, replaced by control bar) ──
   const fab = document.createElement('div');

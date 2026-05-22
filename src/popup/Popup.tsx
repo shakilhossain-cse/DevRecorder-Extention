@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { MSG } from '@shared/types';
 import type { RecordingState, CaptureMode } from '@shared/types';
+import { api } from '@shared/api';
 
 const FRONTEND_URL = 'https://www.devrecorder.com';
 
@@ -15,7 +16,7 @@ export function Popup() {
   const [elapsed, setElapsed] = useState('00:00');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [mode, setMode] = useState<CaptureMode>('window');
+  const mode: CaptureMode = 'window';
   const [micEnabled, setMicEnabled] = useState(false);
   const [savedLink, setSavedLink] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -24,6 +25,16 @@ export function Popup() {
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     return (localStorage.getItem('devrecorder-theme') as 'dark' | 'light') || 'dark';
   });
+  // Integration state
+  const [integrations, setIntegrations] = useState<{ clickup: boolean; trello: boolean }>({ clickup: false, trello: false });
+  const [showCreateTask, setShowCreateTask] = useState(false);
+  const [taskProvider, setTaskProvider] = useState<'clickup' | 'trello' | null>(null);
+  const [taskLists, setTaskLists] = useState<{ id: string; name: string; group: string }[]>([]);
+  const [taskListsLoading, setTaskListsLoading] = useState(false);
+  const [taskSelectedList, setTaskSelectedList] = useState('');
+  const [taskName, setTaskName] = useState('');
+  const [taskCreating, setTaskCreating] = useState(false);
+  const [taskCreated, setTaskCreated] = useState<{ name: string; url: string } | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number | null>(null);
 
@@ -85,7 +96,7 @@ export function Popup() {
     chrome.runtime.sendMessage({ type: MSG.RECORDING_STATE }).then((res) => {
       if (res) {
         setState(res);
-        if ((res.status === 'recording' || res.status === 'paused') && res.startTime) {
+        if ((res.status === 'recording' || res.status === 'paused' || res.status === 'countdown') && res.startTime) {
           startTimeRef.current = res.startTime;
           startTimer();
         }
@@ -151,13 +162,14 @@ export function Popup() {
         });
 
         if (result.success) {
-          startTimeRef.current = Date.now();
-          setState({ status: 'recording', id: result.recordingId, tabId: tab.id, startTime: Date.now() });
-          startTimer();
+          // State starts as 'countdown' — timer will begin when countdown finishes
+          setState({ status: 'countdown', id: result.recordingId, tabId: tab.id, startTime: null });
+          // Close popup so user sees the countdown on the page
+          window.close();
         } else {
           setError(result.error || 'Failed to start');
         }
-      } else if (state.status === 'recording' || state.status === 'paused') {
+      } else if (state.status === 'recording' || state.status === 'paused' || state.status === 'countdown') {
         const recId = state.id;
         const result = await chrome.runtime.sendMessage({ type: MSG.STOP_RECORDING });
 
@@ -168,6 +180,8 @@ export function Popup() {
           if (recId) {
             setSavedLink(`${FRONTEND_URL}/share/${recId}`);
             setUploading(true);
+            // Fetch connected integrations
+            api.getConnectedIntegrations().then(setIntegrations).catch(() => {});
           }
         } else {
           setError(result.error || 'Failed to stop');
@@ -194,6 +208,55 @@ export function Popup() {
     if (!savedLink) return;
     chrome.tabs.create({ url: savedLink });
     window.close();
+  };
+
+  const handleOpenCreateTask = async (provider: 'clickup' | 'trello') => {
+    setTaskProvider(provider);
+    setShowCreateTask(true);
+    setTaskName(`Bug: ${state.id ? 'Recording' : 'Issue'}`);
+    setTaskCreated(null);
+    setTaskListsLoading(true);
+    try {
+      if (provider === 'clickup') {
+        const lists = await api.getClickUpLists();
+        setTaskLists(lists.map((l) => ({ id: l.id, name: l.name, group: l.space })));
+        if (lists.length > 0) setTaskSelectedList(lists[0].id);
+      } else {
+        const lists = await api.getTrelloLists();
+        setTaskLists(lists.map((l) => ({ id: l.id, name: l.name, group: l.board })));
+        if (lists.length > 0) setTaskSelectedList(lists[0].id);
+      }
+    } catch {}
+    setTaskListsLoading(false);
+  };
+
+  const handleCreateTask = async () => {
+    if (!taskProvider || !taskSelectedList || !taskName.trim()) return;
+    setTaskCreating(true);
+    const recId = savedLink?.split('/share/')[1] || '';
+    const description = `Recording: ${savedLink}\n\nCreated from DevRecorder extension.`;
+    try {
+      if (taskProvider === 'clickup') {
+        const { task } = await api.createClickUpTask({
+          listId: taskSelectedList,
+          name: taskName,
+          description,
+          recordingId: recId,
+        });
+        setTaskCreated({ name: task.name, url: task.url });
+      } else {
+        const { card } = await api.createTrelloCard({
+          listId: taskSelectedList,
+          name: taskName,
+          description,
+          recordingId: recId,
+        });
+        setTaskCreated({ name: card.name, url: card.shortUrl || card.url });
+      }
+    } catch {
+      setError(`Failed to create ${taskProvider === 'clickup' ? 'task' : 'card'}`);
+    }
+    setTaskCreating(false);
   };
 
   // ── Loading state ──────────────────────
@@ -260,7 +323,7 @@ export function Popup() {
     );
   }
 
-  const isRecording = state.status === 'recording' || state.status === 'paused';
+  const isRecording = state.status === 'recording' || state.status === 'paused' || state.status === 'countdown';
   const isPaused = state.status === 'paused';
 
   const handlePauseResume = async () => {
@@ -279,6 +342,136 @@ export function Popup() {
 
   // ── Saved modal ────────────────────────
   if (savedLink) {
+    // Task creation sub-panel
+    if (showCreateTask && taskProvider) {
+      return (
+        <div className="container">
+          <div className="saved-modal">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+              <button
+                onClick={() => { setShowCreateTask(false); setTaskProvider(null); }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', color: 'var(--text-secondary)' }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
+                </svg>
+              </button>
+              <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Create a</span>
+              <span style={{
+                fontSize: '12px',
+                fontWeight: 600,
+                padding: '2px 8px',
+                borderRadius: '6px',
+                background: taskProvider === 'clickup' ? 'rgba(236,72,153,0.1)' : 'rgba(14,165,233,0.1)',
+                color: taskProvider === 'clickup' ? '#ec4899' : '#0ea5e9',
+              }}>
+                {taskProvider === 'clickup' ? 'ClickUp task' : 'Trello card'}
+              </span>
+            </div>
+
+            {taskCreated ? (
+              <>
+                <div className="saved-icon">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                    <polyline points="22 4 12 14.01 9 11.01"/>
+                  </svg>
+                </div>
+                <h2 className="saved-title">{taskProvider === 'clickup' ? 'Task' : 'Card'} Created!</h2>
+                <p className="saved-subtitle" style={{ wordBreak: 'break-all' }}>{taskCreated.name}</p>
+                <div className="saved-actions">
+                  <button className="saved-open-btn" onClick={() => {
+                    chrome.tabs.create({ url: taskCreated.url });
+                    window.close();
+                  }}>
+                    Open in {taskProvider === 'clickup' ? 'ClickUp' : 'Trello'}
+                  </button>
+                  <button className="saved-close-btn" onClick={() => { setShowCreateTask(false); setTaskProvider(null); }}>
+                    Back
+                  </button>
+                </div>
+              </>
+            ) : taskListsLoading ? (
+              <div style={{ display: 'flex', justifyContent: 'center', padding: '32px 0' }}>
+                <svg style={{ animation: 'spin 1s linear infinite' }} width="24" height="24" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.25"/>
+                  <path d="M4 12a8 8 0 0 1 8-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
+                </svg>
+              </div>
+            ) : (
+              <>
+                <div style={{ marginBottom: '12px' }}>
+                  <label style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                    {taskProvider === 'clickup' ? 'Task' : 'Card'} name
+                  </label>
+                  <input
+                    type="text"
+                    value={taskName}
+                    onChange={(e) => setTaskName(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--border)',
+                      background: 'var(--bg-secondary)',
+                      color: 'var(--text-primary)',
+                      fontSize: '13px',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                    {taskProvider === 'clickup' ? 'List' : 'Board / List'}
+                  </label>
+                  {taskLists.length === 0 ? (
+                    <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>No lists found</p>
+                  ) : (
+                    <select
+                      value={taskSelectedList}
+                      onChange={(e) => setTaskSelectedList(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg-secondary)',
+                        color: 'var(--text-primary)',
+                        fontSize: '13px',
+                        outline: 'none',
+                        cursor: 'pointer',
+                        boxSizing: 'border-box',
+                      }}
+                    >
+                      {taskLists.map((list) => (
+                        <option key={list.id} value={list.id}>{list.group} — {list.name}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                <div className="saved-actions">
+                  <button
+                    className="saved-open-btn"
+                    onClick={handleCreateTask}
+                    disabled={taskCreating || !taskSelectedList || !taskName.trim()}
+                    style={taskProvider === 'clickup' ? { background: '#ec4899' } : { background: '#0ea5e9' }}
+                  >
+                    {taskCreating ? 'Creating...' : 'Create'}
+                  </button>
+                  <button className="saved-close-btn" onClick={() => { setShowCreateTask(false); setTaskProvider(null); }}>
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="container">
         <div className="saved-modal">
@@ -326,11 +519,67 @@ export function Popup() {
             </button>
           </div>
 
+          {/* Integration buttons */}
+          {(integrations.clickup || integrations.trello) && !uploading && (
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '4px' }}>
+              {integrations.clickup && (
+                <button
+                  onClick={() => handleOpenCreateTask('clickup')}
+                  style={{
+                    flex: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)',
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ec4899" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="4 14 9 19 20 6"/><polyline points="4 8 9 13 20 2"/>
+                  </svg>
+                  ClickUp
+                </button>
+              )}
+              {integrations.trello && (
+                <button
+                  onClick={() => handleOpenCreateTask('trello')}
+                  style={{
+                    flex: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)',
+                    fontSize: '12px',
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="7" height="16" rx="1.5"/><rect x="14" y="3" width="7" height="10" rx="1.5"/>
+                  </svg>
+                  Trello
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="saved-actions">
             <button className="saved-open-btn" onClick={handleOpen} disabled={uploading}>
               {uploading ? 'Uploading...' : 'View Recording'}
             </button>
-            <button className="saved-close-btn" onClick={() => { setSavedLink(null); setUploading(false); }}>
+            <button className="saved-close-btn" onClick={() => { setSavedLink(null); setUploading(false); setShowCreateTask(false); setTaskProvider(null); setTaskCreated(null); }}>
               New Recording
             </button>
           </div>
@@ -348,9 +597,9 @@ export function Popup() {
           <span className="logo-icon">&#x2B24;</span>
           <span className="logo-text">DevRecorder</span>
         </div>
-        <div className={`status-badge ${isRecording ? (isPaused ? 'paused' : 'recording') : ''}`}>
-          <span className={`status-dot ${isRecording ? (isPaused ? 'paused' : 'recording') : ''}`} />
-          <span>{isRecording ? (isPaused ? 'Paused' : 'Recording') : 'Ready'}</span>
+        <div className={`status-badge ${isRecording ? (isPaused ? 'paused' : state.status === 'countdown' ? 'countdown' : 'recording') : ''}`}>
+          <span className={`status-dot ${isRecording ? (isPaused ? 'paused' : state.status === 'countdown' ? 'countdown' : 'recording') : ''}`} />
+          <span>{isRecording ? (isPaused ? 'Paused' : state.status === 'countdown' ? 'Starting...' : 'Recording') : 'Ready'}</span>
         </div>
       </div>
 
@@ -360,30 +609,15 @@ export function Popup() {
         {isRecording && <div className="timer-glow" />}
       </div>
 
-      {/* Mode Selector  only show when idle */}
+      {/* Tab capture info */}
       {!isRecording && (
-        <div className="mode-selector">
-          <button
-            className={`mode-btn ${mode === 'window' ? 'active' : ''}`}
-            onClick={() => setMode('window')}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-              <line x1="8" y1="21" x2="16" y2="21"/>
-              <line x1="12" y1="17" x2="12" y2="21"/>
-            </svg>
-            <span>Window</span>
-          </button>
-          <button
-            className={`mode-btn ${mode === 'region' ? 'active' : ''}`}
-            onClick={() => setMode('region')}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M6 2L2 6"/><path d="M2 12v-2"/><path d="M2 18l4 4"/><path d="M12 2h2"/>
-              <path d="M18 2l4 4"/><path d="M22 12v2"/><path d="M22 18l-4 4"/><path d="M12 22h-2"/>
-            </svg>
-            <span>Region</span>
-          </button>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '0 12px', marginBottom: '4px' }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.4 }}>
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+            <line x1="8" y1="21" x2="16" y2="21"/>
+            <line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+          <span style={{ fontSize: '11px', opacity: 0.4 }}>Records current tab</span>
         </div>
       )}
 

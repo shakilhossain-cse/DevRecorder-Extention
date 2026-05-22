@@ -35,6 +35,19 @@
             stack: event.data.stack,
           },
         }).catch(() => {});
+      } else if (event.data.type === 'interaction') {
+        chrome.runtime.sendMessage({
+          type: 'INTERACTION_EVENT',
+          data: {
+            action: event.data.action,
+            selector: event.data.selector,
+            tag: event.data.tag,
+            text: event.data.text,
+            attributes: event.data.attributes,
+            attrCount: event.data.attrCount,
+            timestamp: event.data.timestamp,
+          },
+        }).catch(() => {});
       } else if (event.data.type === 'network-response') {
         chrome.runtime.sendMessage({
           type: 'NETWORK_RESPONSE',

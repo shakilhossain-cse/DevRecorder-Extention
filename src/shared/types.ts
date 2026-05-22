@@ -4,6 +4,7 @@ export const MSG = {
   STOP_RECORDING: 'STOP_RECORDING',
   RECORDING_STATE: 'RECORDING_STATE',
   BEGIN_CAPTURE: 'BEGIN_CAPTURE',
+  BEGIN_TAB_CAPTURE: 'BEGIN_TAB_CAPTURE',
   RECORDING_SAVED: 'RECORDING_SAVED',
   CONSOLE_EVENT: 'CONSOLE_EVENT',
   CAPTURE_READY: 'CAPTURE_READY',
@@ -16,6 +17,8 @@ export const MSG = {
   REQUEST_MIC_PERMISSION: 'REQUEST_MIC_PERMISSION',
   PAUSE_RECORDING: 'PAUSE_RECORDING',
   RESUME_RECORDING: 'RESUME_RECORDING',
+  COUNTDOWN_COMPLETE: 'COUNTDOWN_COMPLETE',
+  INTERACTION_EVENT: 'INTERACTION_EVENT',
 } as const;
 
 // ── Capture Mode ───────────────────────────
@@ -29,10 +32,10 @@ export interface CropRect {
 }
 
 // ── Event Types ────────────────────────────
-export type EventType = 'console' | 'network' | 'navigation';
+export type EventType = 'console' | 'network' | 'navigation' | 'device-info' | 'storage' | 'interaction';
 
 // ── Recording State ────────────────────────
-export type RecordingStatus = 'idle' | 'recording' | 'paused' | 'stopping' | 'uploading';
+export type RecordingStatus = 'idle' | 'countdown' | 'recording' | 'paused' | 'stopping' | 'uploading';
 
 export interface RecordingState {
   status: RecordingStatus;
@@ -79,12 +82,21 @@ export interface NavigationEventData {
   transitionType: string;
 }
 
+export interface InteractionEventData {
+  action: 'click' | 'input' | 'scroll' | 'focus';
+  selector: string;
+  tag: string;
+  text?: string;
+  attributes: Record<string, string>;
+  attrCount: number;
+}
+
 export interface TimelineEvent {
   _id?: string;
   recordingId: string;
   type: EventType;
   relativeTime: number;
-  data: ConsoleEventData | NetworkEventData | NavigationEventData;
+  data: ConsoleEventData | NetworkEventData | NavigationEventData | InteractionEventData;
 }
 
 // ── Messages ───────────────────────────────
@@ -160,6 +172,23 @@ export interface ResumeRecordingMsg {
   type: typeof MSG.RESUME_RECORDING;
 }
 
+export interface CountdownCompleteMsg {
+  type: typeof MSG.COUNTDOWN_COMPLETE;
+}
+
+export interface InteractionEventMsg {
+  type: typeof MSG.INTERACTION_EVENT;
+  data: {
+    action: 'click' | 'input' | 'scroll' | 'focus';
+    selector: string;
+    tag: string;
+    text?: string;
+    attributes: Record<string, string>;
+    attrCount: number;
+    timestamp: number;
+  };
+}
+
 export type ExtensionMessage =
   | StartRecordingMsg
   | StopRecordingMsg
@@ -174,4 +203,6 @@ export type ExtensionMessage =
   | ConsoleEventMsg
   | RequestMicPermissionMsg
   | PauseRecordingMsg
-  | ResumeRecordingMsg;
+  | ResumeRecordingMsg
+  | CountdownCompleteMsg
+  | InteractionEventMsg;
