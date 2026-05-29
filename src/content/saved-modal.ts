@@ -2,21 +2,19 @@
   if (document.getElementById('devrecorder-saved-modal')) return;
 
   let shareLink = '';
-  let viewLink = '';
   let recId = '';
-  let uploadDone = false;
-  let uploadProgress = 0;
-  let copied = false;
+  let saved = false;
+  let trimStart = 0;
+  let trimEnd = 1; // fraction 0-1
 
   // ── Styles ────────────────────────────────────
   const style = document.createElement('style');
   style.textContent = `
-    @keyframes dr-modal-in { from { opacity:0; } to { opacity:1; } }
-    @keyframes dr-card-in { from { opacity:0; transform:scale(0.96) translateY(12px); } to { opacity:1; transform:scale(1) translateY(0); } }
-    @keyframes dr-pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
-    @keyframes dr-progress { from{background-position:200% 0} to{background-position:-200% 0} }
+    @keyframes dr-ss-in { from { opacity:0; } to { opacity:1; } }
+    @keyframes dr-ss-card-in { from { opacity:0; transform:scale(0.97) translateY(8px); } to { opacity:1; transform:scale(1) translateY(0); } }
     #devrecorder-saved-modal * { box-sizing:border-box; margin:0; padding:0; }
-    #devrecorder-saved-modal button { font-family:inherit; }
+    #devrecorder-saved-modal button { font-family:inherit; cursor:pointer; }
+    #devrecorder-saved-modal input, #devrecorder-saved-modal textarea { font-family:inherit; }
   `;
   document.head.appendChild(style);
 
@@ -26,330 +24,382 @@
   backdrop.style.cssText = `
     position:fixed;inset:0;z-index:2147483647;
     display:flex;align-items:center;justify-content:center;
-    background:rgba(0,0,0,0.6);backdrop-filter:blur(8px);
+    background:rgba(0,0,0,0.6);backdrop-filter:blur(6px);
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-    animation:dr-modal-in 0.2s ease-out;
+    animation:dr-ss-in 0.2s ease-out;
   `;
 
   // ── Card ──────────────────────────────────────
   const card = document.createElement('div');
   card.style.cssText = `
-    background:#fff;border-radius:16px;width:820px;max-width:92vw;max-height:88vh;
+    display:flex;flex-direction:column;width:calc(100vw - 80px);
+    height:calc(100vh - 60px);background:#fff;border-radius:16px;
     box-shadow:0 25px 80px rgba(0,0,0,0.35);
-    animation:dr-card-in 0.25s ease-out;
-    display:flex;flex-direction:column;overflow:hidden;
+    animation:dr-ss-card-in 0.25s ease-out;overflow:hidden;
   `;
 
-  // ── Header ────────────────────────────────────
-  const header = document.createElement('div');
-  header.style.cssText = `
-    padding:16px 20px;display:flex;align-items:center;justify-content:space-between;
-    border-bottom:1px solid #f4f4f5;flex-shrink:0;
-  `;
-
-  const headerLeft = document.createElement('div');
-  headerLeft.style.cssText = 'display:flex;align-items:center;gap:10px;';
-  headerLeft.innerHTML = `
-    <div style="width:28px;height:28px;border-radius:8px;background:rgba(239,68,68,0.1);display:flex;align-items:center;justify-content:center;">
-      <div style="width:8px;height:8px;border-radius:50%;background:#ef4444;"></div>
-    </div>
-    <span style="font-size:14px;font-weight:700;color:#18181b;">DevRecorder</span>
-  `;
-
-  const closeBtn = document.createElement('button');
-  closeBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a1a1aa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
-  closeBtn.style.cssText = 'border:none;background:none;cursor:pointer;padding:6px;border-radius:8px;display:flex;';
-  closeBtn.onmouseenter = () => { closeBtn.style.background = '#f4f4f5'; };
-  closeBtn.onmouseleave = () => { closeBtn.style.background = 'none'; };
-  closeBtn.onclick = destroy;
-
-  header.appendChild(headerLeft);
-  header.appendChild(closeBtn);
-
-  // ── Body (two columns) ────────────────────────
   const body = document.createElement('div');
-  body.style.cssText = 'display:flex;flex:1;overflow:hidden;min-height:0;';
+  body.style.cssText = 'display:flex;flex:1;overflow:hidden;min-height:0;position:relative;';
 
-  // ── Left: Video Preview ───────────────────────
+  // ══════════════════════════════════════════════
+  // LEFT PANEL — Video player + timeline + trim
+  // ══════════════════════════════════════════════
   const leftPanel = document.createElement('div');
   leftPanel.style.cssText = `
     flex:1;min-width:0;background:#09090b;display:flex;flex-direction:column;
-    align-items:center;justify-content:center;padding:24px;position:relative;
+    position:relative;overflow:hidden;
   `;
 
-  const videoPlaceholder = document.createElement('div');
-  videoPlaceholder.style.cssText = `
-    width:100%;aspect-ratio:16/9;border-radius:12px;background:#18181b;
-    display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;
-    border:1px solid #27272a;overflow:hidden;position:relative;
+  // Close button
+  const closeBtn = document.createElement('button');
+  closeBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.7)" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+  closeBtn.style.cssText = `
+    position:absolute;top:14px;left:14px;z-index:10;
+    width:36px;height:36px;border-radius:50%;border:none;
+    background:rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;
+    transition:background 0.12s;backdrop-filter:blur(4px);
+  `;
+  closeBtn.onmouseenter = () => { closeBtn.style.background = 'rgba(255,255,255,0.2)'; };
+  closeBtn.onmouseleave = () => { closeBtn.style.background = 'rgba(255,255,255,0.1)'; };
+  closeBtn.onclick = destroy;
+
+  // Video element
+  const video = document.createElement('video');
+  video.style.cssText = `
+    flex:1;width:100%;min-height:0;object-fit:contain;background:#09090b;cursor:pointer;
+  `;
+  video.playsInline = true;
+  video.muted = false;
+  video.onclick = () => { video.paused ? video.play() : video.pause(); updatePlayBtn(); };
+
+  // Preview image (shown until video loads)
+  const previewImg = document.createElement('img');
+  previewImg.style.cssText = `
+    position:absolute;inset:0;width:100%;height:calc(100% - 80px);
+    object-fit:contain;background:#09090b;pointer-events:none;
   `;
 
-  const uploadStatusEl = document.createElement('div');
-  uploadStatusEl.style.cssText = 'text-align:center;';
+  // Play overlay (shown on top of preview)
+  const playOverlay = document.createElement('div');
+  playOverlay.style.cssText = `
+    position:absolute;top:0;left:0;right:0;bottom:80px;
+    display:flex;align-items:center;justify-content:center;
+    pointer-events:none;
+  `;
+  const playCircle = document.createElement('div');
+  playCircle.style.cssText = `
+    width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,0.9);
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 4px 20px rgba(0,0,0,0.3);transition:transform 0.15s,opacity 0.15s;
+  `;
+  playCircle.innerHTML = `<svg width="26" height="26" viewBox="0 0 24 24" fill="#18181b"><polygon points="6,3 20,12 6,21"/></svg>`;
+  playOverlay.appendChild(playCircle);
 
-  const uploadIconEl = document.createElement('div');
-  uploadIconEl.style.cssText = 'margin-bottom:8px;';
+  function updatePlayBtn() {
+    playCircle.style.opacity = video.paused ? '1' : '0';
+  }
 
-  const uploadTitleEl = document.createElement('div');
-  uploadTitleEl.style.cssText = 'font-size:15px;font-weight:600;color:#fff;margin-bottom:4px;';
+  video.onplay = updatePlayBtn;
+  video.onpause = updatePlayBtn;
 
-  const uploadSubEl = document.createElement('div');
-  uploadSubEl.style.cssText = 'font-size:12px;color:#71717a;';
+  // ── Bottom controls bar ───────────────────────
+  const controlsBar = document.createElement('div');
+  controlsBar.style.cssText = `
+    height:80px;flex-shrink:0;background:#111;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    padding:8px 20px;gap:6px;
+  `;
 
-  uploadStatusEl.appendChild(uploadIconEl);
-  uploadStatusEl.appendChild(uploadTitleEl);
-  uploadStatusEl.appendChild(uploadSubEl);
-  videoPlaceholder.appendChild(uploadStatusEl);
+  // Play button + timeline row
+  const timelineRow = document.createElement('div');
+  timelineRow.style.cssText = 'display:flex;align-items:center;gap:12px;width:100%;';
 
-  // Progress bar inside video area
-  const progressWrap = document.createElement('div');
-  progressWrap.style.cssText = 'position:absolute;bottom:0;left:0;right:0;height:4px;background:#27272a;';
-  const progressFill = document.createElement('div');
-  progressFill.style.cssText = 'height:100%;background:#ef4444;width:0%;transition:width 0.4s ease;';
-  progressWrap.appendChild(progressFill);
-  videoPlaceholder.appendChild(progressWrap);
+  const playBtn = document.createElement('button');
+  playBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><polygon points="6,3 20,12 6,21"/></svg>`;
+  playBtn.style.cssText = `
+    width:36px;height:36px;border-radius:50%;border:none;
+    background:rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;
+    transition:background 0.12s;flex-shrink:0;
+  `;
+  playBtn.onmouseenter = () => { playBtn.style.background = 'rgba(255,255,255,0.2)'; };
+  playBtn.onmouseleave = () => { playBtn.style.background = 'rgba(255,255,255,0.1)'; };
+  playBtn.onclick = () => { video.paused ? video.play() : video.pause(); };
 
-  leftPanel.appendChild(videoPlaceholder);
+  // Timeline with trim handles
+  const timelineWrap = document.createElement('div');
+  timelineWrap.style.cssText = 'flex:1;position:relative;height:36px;display:flex;align-items:center;';
 
-  // Duration label below video
-  const durationLabel = document.createElement('div');
-  durationLabel.style.cssText = 'margin-top:12px;font-size:12px;color:#52525b;';
-  durationLabel.textContent = 'Processing...';
-  leftPanel.appendChild(durationLabel);
+  const timelineTrack = document.createElement('div');
+  timelineTrack.style.cssText = `
+    width:100%;height:8px;background:#333;border-radius:4px;position:relative;
+    cursor:pointer;overflow:visible;
+  `;
 
-  // ── Right: Share + Task Creation ──────────────
+  // Trim region (highlighted area)
+  const trimRegion = document.createElement('div');
+  trimRegion.style.cssText = `
+    position:absolute;top:0;height:100%;background:#a855f6;border-radius:4px;
+    left:0%;width:100%;
+  `;
+
+  // Progress indicator
+  const progressHead = document.createElement('div');
+  progressHead.style.cssText = `
+    position:absolute;top:-4px;width:3px;height:16px;background:#fff;
+    border-radius:2px;left:0%;transform:translateX(-50%);z-index:5;
+    box-shadow:0 1px 4px rgba(0,0,0,0.4);pointer-events:none;
+  `;
+
+  // Left trim handle
+  const trimLeftHandle = document.createElement('div');
+  trimLeftHandle.style.cssText = `
+    position:absolute;top:-6px;width:10px;height:20px;background:#fff;
+    border-radius:3px;left:0%;transform:translateX(-50%);cursor:ew-resize;z-index:6;
+    box-shadow:0 1px 4px rgba(0,0,0,0.4);
+  `;
+
+  // Right trim handle
+  const trimRightHandle = document.createElement('div');
+  trimRightHandle.style.cssText = `
+    position:absolute;top:-6px;width:10px;height:20px;background:#fff;
+    border-radius:3px;right:0%;transform:translateX(50%);cursor:ew-resize;z-index:6;
+    box-shadow:0 1px 4px rgba(0,0,0,0.4);
+  `;
+
+  timelineTrack.appendChild(trimRegion);
+  timelineTrack.appendChild(progressHead);
+  timelineTrack.appendChild(trimLeftHandle);
+  timelineTrack.appendChild(trimRightHandle);
+  timelineWrap.appendChild(timelineTrack);
+
+  // Duration label
+  const durationLabel = document.createElement('span');
+  durationLabel.style.cssText = 'font-size:12px;color:#a1a1aa;font-variant-numeric:tabular-nums;min-width:52px;text-align:center;flex-shrink:0;';
+  durationLabel.textContent = '0:00';
+
+  timelineRow.appendChild(playBtn);
+  timelineRow.appendChild(timelineWrap);
+  timelineRow.appendChild(durationLabel);
+  controlsBar.appendChild(timelineRow);
+
+  // ── Timeline interactions ─────────────────────
+  function getTrackFraction(e: MouseEvent): number {
+    const rect = timelineTrack.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  }
+
+  // Click to seek
+  timelineTrack.onmousedown = (e) => {
+    if (e.target === trimLeftHandle || e.target === trimRightHandle) return;
+    const frac = getTrackFraction(e);
+    if (video.duration) video.currentTime = frac * video.duration;
+  };
+
+  // Trim handles drag
+  function setupTrimDrag(handle: HTMLElement, isLeft: boolean) {
+    handle.onmousedown = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const onMove = (ev: MouseEvent) => {
+        const frac = getTrackFraction(ev);
+        if (isLeft) {
+          trimStart = Math.min(frac, trimEnd - 0.02);
+        } else {
+          trimEnd = Math.max(frac, trimStart + 0.02);
+        }
+        updateTrimUI();
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    };
+  }
+  setupTrimDrag(trimLeftHandle, true);
+  setupTrimDrag(trimRightHandle, false);
+
+  function updateTrimUI() {
+    trimRegion.style.left = `${trimStart * 100}%`;
+    trimRegion.style.width = `${(trimEnd - trimStart) * 100}%`;
+    trimLeftHandle.style.left = `${trimStart * 100}%`;
+    trimRightHandle.style.right = `${(1 - trimEnd) * 100}%`;
+
+    if (video.duration) {
+      const dur = (trimEnd - trimStart) * video.duration;
+      durationLabel.textContent = formatTime(dur);
+    }
+  }
+
+  // Update progress on timeupdate
+  video.ontimeupdate = () => {
+    if (!video.duration) return;
+    const frac = video.currentTime / video.duration;
+    progressHead.style.left = `${frac * 100}%`;
+
+    // Loop within trim region
+    if (frac >= trimEnd) {
+      video.currentTime = trimStart * video.duration;
+    }
+  };
+
+  video.onloadedmetadata = () => {
+    durationLabel.textContent = formatTime(video.duration);
+    previewImg.style.display = 'none';
+  };
+
+  function formatTime(sec: number): string {
+    const s = Math.round(sec);
+    const m = Math.floor(s / 60);
+    return `${m}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  leftPanel.appendChild(closeBtn);
+  leftPanel.appendChild(video);
+  leftPanel.appendChild(previewImg);
+  leftPanel.appendChild(playOverlay);
+  leftPanel.appendChild(controlsBar);
+
+  // ══════════════════════════════════════════════
+  // RIGHT PANEL — Title, Description, Create
+  // ══════════════════════════════════════════════
   const rightPanel = document.createElement('div');
   rightPanel.style.cssText = `
-    width:320px;flex-shrink:0;display:flex;flex-direction:column;
-    border-left:1px solid #f4f4f5;background:#fafafa;
+    width:380px;flex-shrink:0;display:flex;flex-direction:column;
+    border-left:1px solid #f0f0f0;background:#fff;
   `;
 
-  // Share section
-  const shareSection = document.createElement('div');
-  shareSection.style.cssText = 'padding:20px;border-bottom:1px solid #f4f4f5;';
+  const titleSection = document.createElement('div');
+  titleSection.style.cssText = 'padding:24px 24px 0;';
+  const titleInput = document.createElement('input');
+  titleInput.type = 'text';
+  titleInput.placeholder = 'Title';
+  titleInput.style.cssText = 'width:100%;border:none;outline:none;font-size:18px;font-weight:700;color:#18181b;padding:0;background:transparent;';
+  titleSection.appendChild(titleInput);
 
-  const shareTitle = document.createElement('div');
-  shareTitle.style.cssText = 'font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#a1a1aa;margin-bottom:10px;';
-  shareTitle.textContent = 'Share link';
+  const descSection = document.createElement('div');
+  descSection.style.cssText = 'padding:12px 24px;flex:1;';
+  const descInput = document.createElement('textarea');
+  descInput.placeholder = 'Write a description or @ to mention';
+  descInput.style.cssText = 'width:100%;height:100%;border:none;outline:none;font-size:14px;color:#52525b;padding:0;background:transparent;resize:none;line-height:1.6;';
+  descSection.appendChild(descInput);
 
-  const linkRow = document.createElement('div');
-  linkRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+  const rightFooter = document.createElement('div');
+  rightFooter.style.cssText = 'padding:16px 24px;border-top:1px solid #f0f0f0;display:flex;align-items:center;justify-content:flex-end;gap:12px;';
 
-  const linkInput = document.createElement('input');
-  linkInput.readOnly = true;
-  linkInput.style.cssText = `
-    flex:1;padding:8px 10px;border-radius:8px;border:1px solid #e4e4e7;
-    background:#fff;font-size:12px;color:#52525b;font-family:monospace;
-    outline:none;min-width:0;
+  const createBtn = document.createElement('button');
+  createBtn.textContent = 'Create & copy link';
+  createBtn.style.cssText = `
+    padding:10px 24px;border-radius:10px;border:none;
+    background:linear-gradient(135deg, #a855f6, #7c3aed);color:#fff;
+    font-size:14px;font-weight:600;
+    transition:all 0.15s;box-shadow:0 2px 8px rgba(168,85,246,0.3);
   `;
+  createBtn.onmouseenter = () => { createBtn.style.transform = 'translateY(-1px)'; createBtn.style.boxShadow = '0 4px 16px rgba(168,85,246,0.4)'; };
+  createBtn.onmouseleave = () => { createBtn.style.transform = 'translateY(0)'; createBtn.style.boxShadow = '0 2px 8px rgba(168,85,246,0.3)'; };
+  createBtn.onclick = handleCreate;
+  rightFooter.appendChild(createBtn);
 
-  const copyBtn = document.createElement('button');
-  copyBtn.textContent = 'Copy';
-  copyBtn.style.cssText = `
-    padding:8px 14px;border-radius:8px;border:none;
-    background:#18181b;color:#fff;font-size:12px;font-weight:600;
-    cursor:pointer;white-space:nowrap;transition:background 0.15s;
-  `;
-  copyBtn.onmouseenter = () => { if (!copied) copyBtn.style.background = '#27272a'; };
-  copyBtn.onmouseleave = () => { if (!copied) copyBtn.style.background = '#18181b'; };
-  copyBtn.onclick = () => {
-    navigator.clipboard.writeText(shareLink).then(() => {
-      copied = true;
-      copyBtn.textContent = 'Copied!';
-      copyBtn.style.background = '#16a34a';
-      setTimeout(() => { copied = false; copyBtn.textContent = 'Copy'; copyBtn.style.background = '#18181b'; }, 2000);
-    });
-  };
-
-  linkRow.appendChild(linkInput);
-  linkRow.appendChild(copyBtn);
-  shareSection.appendChild(shareTitle);
-  shareSection.appendChild(linkRow);
-
-  // Integration section
-  const integSection = document.createElement('div');
-  integSection.style.cssText = 'padding:20px;flex:1;overflow-y:auto;';
-
-  const integTitle = document.createElement('div');
-  integTitle.style.cssText = 'font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#a1a1aa;margin-bottom:12px;';
-  integTitle.textContent = 'Create task';
-
-  const integButtons = document.createElement('div');
-  integButtons.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
-
-  // ClickUp button
-  const clickupBtn = document.createElement('button');
-  clickupBtn.style.cssText = `
-    display:flex;align-items:center;gap:10px;width:100%;padding:12px;
-    border-radius:10px;border:1px solid #e4e4e7;background:#fff;
-    cursor:pointer;transition:border-color 0.15s,background 0.15s;text-align:left;
-  `;
-  clickupBtn.innerHTML = `
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ec4899" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 9 19 20 6"/><polyline points="4 8 9 13 20 2"/></svg>
-    <div>
-      <div style="font-size:13px;font-weight:600;color:#18181b;">ClickUp</div>
-      <div style="font-size:11px;color:#71717a;">Create a task</div>
-    </div>
-  `;
-  clickupBtn.onmouseenter = () => { clickupBtn.style.borderColor = '#ec4899'; clickupBtn.style.background = '#fdf2f8'; };
-  clickupBtn.onmouseleave = () => { clickupBtn.style.borderColor = '#e4e4e7'; clickupBtn.style.background = '#fff'; };
-  clickupBtn.onclick = () => {
-    window.open(`https://www.devrecorder.com/recordings/${recId}`, '_blank');
-  };
-
-  // Trello button
-  const trelloBtn = document.createElement('button');
-  trelloBtn.style.cssText = clickupBtn.style.cssText;
-  trelloBtn.innerHTML = `
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="16" rx="1.5"/><rect x="14" y="3" width="7" height="10" rx="1.5"/></svg>
-    <div>
-      <div style="font-size:13px;font-weight:600;color:#18181b;">Trello</div>
-      <div style="font-size:11px;color:#71717a;">Create a card</div>
-    </div>
-  `;
-  trelloBtn.onmouseenter = () => { trelloBtn.style.borderColor = '#0ea5e9'; trelloBtn.style.background = '#f0f9ff'; };
-  trelloBtn.onmouseleave = () => { trelloBtn.style.borderColor = '#e4e4e7'; trelloBtn.style.background = '#fff'; };
-  trelloBtn.onclick = () => {
-    window.open(`https://www.devrecorder.com/recordings/${recId}`, '_blank');
-  };
-
-  integButtons.appendChild(clickupBtn);
-  integButtons.appendChild(trelloBtn);
-  integSection.appendChild(integTitle);
-  integSection.appendChild(integButtons);
-
-  rightPanel.appendChild(shareSection);
-  rightPanel.appendChild(integSection);
-
-  // Footer actions
-  const footer = document.createElement('div');
-  footer.style.cssText = 'padding:16px 20px;border-top:1px solid #f4f4f5;display:flex;gap:10px;flex-shrink:0;';
-
-  const viewBtn = document.createElement('button');
-  viewBtn.style.cssText = `
-    flex:1;padding:11px;border-radius:10px;border:none;
-    background:#ef4444;color:#fff;font-size:13px;font-weight:600;
-    cursor:pointer;transition:background 0.15s;
-  `;
-  viewBtn.textContent = 'View Recording';
-  viewBtn.onmouseenter = () => { viewBtn.style.background = '#dc2626'; };
-  viewBtn.onmouseleave = () => { viewBtn.style.background = '#ef4444'; };
-  viewBtn.onclick = () => { window.open(viewLink, '_blank'); destroy(); };
-
-  const closeFooterBtn = document.createElement('button');
-  closeFooterBtn.style.cssText = `
-    flex:1;padding:11px;border-radius:10px;
-    border:1px solid #e4e4e7;background:#fff;color:#3f3f46;
-    font-size:13px;font-weight:600;cursor:pointer;transition:background 0.15s;
-  `;
-  closeFooterBtn.textContent = 'Close';
-  closeFooterBtn.onmouseenter = () => { closeFooterBtn.style.background = '#fafafa'; };
-  closeFooterBtn.onmouseleave = () => { closeFooterBtn.style.background = '#fff'; };
-  closeFooterBtn.onclick = destroy;
-
-  footer.appendChild(viewBtn);
-  footer.appendChild(closeFooterBtn);
+  rightPanel.appendChild(titleSection);
+  rightPanel.appendChild(descSection);
+  rightPanel.appendChild(rightFooter);
 
   // ── Assemble ──────────────────────────────────
   body.appendChild(leftPanel);
   body.appendChild(rightPanel);
-  card.appendChild(header);
   card.appendChild(body);
-  card.appendChild(footer);
   backdrop.appendChild(card);
 
-  // ── Render ────────────────────────────────────
-  function render() {
-    linkInput.value = shareLink;
+  // ── Create & copy link ────────────────────────
+  async function handleCreate() {
+    createBtn.textContent = 'Creating...';
+    createBtn.style.opacity = '0.7';
+    (createBtn as HTMLButtonElement).disabled = true;
 
-    if (uploadDone) {
-      uploadIconEl.innerHTML = `<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`;
-      uploadTitleEl.textContent = 'Ready to view';
-      uploadSubEl.textContent = 'Click "View Recording" to watch';
-      progressFill.style.width = '100%';
-      progressFill.style.background = '#22c55e';
-      durationLabel.textContent = 'Upload complete';
-      viewBtn.style.opacity = '1';
-      viewBtn.disabled = false;
-    } else {
-      uploadIconEl.innerHTML = `<svg style="animation:dr-pulse 1.5s ease-in-out infinite" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>`;
-      uploadTitleEl.textContent = uploadProgress > 0 ? `Uploading ${uploadProgress}%` : 'Uploading...';
-      uploadSubEl.textContent = 'Please wait while your video uploads';
-      progressFill.style.width = `${Math.max(uploadProgress, 3)}%`;
-      progressFill.style.background = '#ef4444';
-      durationLabel.textContent = `Uploading${uploadProgress > 0 ? ` — ${uploadProgress}%` : '...'}`;
-      viewBtn.style.opacity = '0.5';
-      viewBtn.disabled = true;
+    const title = titleInput.value.trim();
+    if (title && recId) {
+      try {
+        const { apiToken } = await chrome.storage.local.get('apiToken');
+        if (apiToken) {
+          await fetch(`https://www.devrecorder.com/api/recordings/${recId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiToken}` },
+            body: JSON.stringify({ title }),
+          });
+        }
+      } catch {}
     }
+
+    try { await navigator.clipboard.writeText(shareLink); } catch {}
+
+    saved = true;
+    createBtn.textContent = 'Copied!';
+    createBtn.style.background = '#22c55e';
+    createBtn.style.boxShadow = '0 2px 8px rgba(34,197,94,0.3)';
+    createBtn.style.opacity = '1';
+    setTimeout(destroy, 1200);
   }
+
+  // ── Escape ────────────────────────────────────
+  function onKeydown(e: KeyboardEvent) {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    if (e.key === 'Escape') destroy();
+    if (e.key === ' ') { e.preventDefault(); video.paused ? video.play() : video.pause(); }
+  }
+  document.addEventListener('keydown', onKeydown);
 
   // ── Init ──────────────────────────────────────
   async function init() {
     try {
       const result = await chrome.storage.session.get('devrecorderSavedModal');
-      const modal = result.devrecorderSavedModal as { recId: string; shareLink: string; viewLink: string } | undefined;
+      const modal = result.devrecorderSavedModal as { recId: string; shareLink: string; viewLink: string; previewThumb?: string } | undefined;
       if (modal) {
         recId = modal.recId;
         shareLink = modal.shareLink;
-        viewLink = modal.viewLink;
-      }
-    } catch {}
-
-    try {
-      const result = await chrome.storage.session.get('uploadComplete');
-      const uc = result.uploadComplete as { recordingId: string } | undefined;
-      if (uc && uc.recordingId === recId) {
-        uploadDone = true;
-      }
-    } catch {}
-
-    // Check connected integrations to show/hide buttons
-    try {
-      const result = await chrome.storage.session.get('devrecorderSavedModal');
-      if (result.devrecorderSavedModal) {
-        // Fetch integration status
-        const { apiToken } = await chrome.storage.local.get('apiToken');
-        if (apiToken) {
-          const res = await fetch('https://www.devrecorder.com/api/integrations/status', {
-            headers: { Authorization: `Bearer ${apiToken}` },
-          });
-          if (res.ok) {
-            const status = await res.json();
-            if (!status.clickup) clickupBtn.style.display = 'none';
-            if (!status.trello) trelloBtn.style.display = 'none';
-            if (!status.clickup && !status.trello) {
-              integSection.style.display = 'none';
-            }
-          }
+        if (modal.previewThumb) {
+          previewImg.src = modal.previewThumb;
         }
       }
     } catch {}
 
-    render();
     document.body.appendChild(backdrop);
+    titleInput.focus();
 
-    // Listen for upload progress and completion
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'session') return;
-      if (changes.uploadProgress?.newValue != null) {
-        uploadProgress = changes.uploadProgress.newValue as number;
-        render();
+    // Request video blob from offscreen for local playback
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'GET_VIDEO_DATA' });
+      if (res?.success && res.buffer) {
+        const blob = new Blob([new Uint8Array(res.buffer)], { type: res.mimeType || 'video/webm' });
+        const blobUrl = URL.createObjectURL(blob);
+        video.src = blobUrl;
+        video.load();
+        // Clean up blob URL when modal closes
+        video.dataset.blobUrl = blobUrl;
       }
-      if (changes.uploadComplete?.newValue) {
-        const uc = changes.uploadComplete.newValue as { recordingId: string };
-        if (uc.recordingId === recId) {
-          uploadDone = true;
-          uploadProgress = 100;
-          render();
-        }
-      }
-    });
+    } catch {}
   }
 
   function destroy() {
+    video.pause();
+    if (video.dataset.blobUrl) URL.revokeObjectURL(video.dataset.blobUrl);
+    video.src = '';
     backdrop.remove();
     style.remove();
+    document.removeEventListener('keydown', onKeydown);
     chrome.storage.session.remove('devrecorderSavedModal').catch(() => {});
+
+    // If user closed without saving, delete the recording from DB
+    if (!saved && recId) {
+      chrome.storage.local.get('apiToken').then(({ apiToken }) => {
+        if (apiToken) {
+          fetch(`https://www.devrecorder.com/api/recordings/${recId}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${apiToken}` },
+          }).catch(() => {});
+        }
+      }).catch(() => {});
+    }
   }
 
   init();

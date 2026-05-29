@@ -16,7 +16,7 @@ export function Popup() {
   const [elapsed, setElapsed] = useState('00:00');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const mode: CaptureMode = 'window';
+  const [mode, setMode] = useState<CaptureMode>('tab');
   const [micEnabled, setMicEnabled] = useState(false);
   const [savedLink, setSavedLink] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -137,6 +137,36 @@ export function Popup() {
   const handleSignOut = () => {
     chrome.storage.local.remove('apiToken');
     setAuthed(false);
+  };
+
+  const handleScreenshot = async (delay?: number) => {
+    setError('');
+    setLoading(true);
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) {
+        setError('No active tab found');
+        setLoading(false);
+        return;
+      }
+
+      const result = await chrome.runtime.sendMessage({
+        type: MSG.TAKE_SCREENSHOT,
+        tabId: tab.id,
+        tabTitle: tab.title || '',
+        tabUrl: tab.url || '',
+        delay,
+      });
+
+      if (result.success) {
+        window.close();
+      } else {
+        setError(result.error || 'Failed to take screenshot');
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    }
+    setLoading(false);
   };
 
   const handleRecord = async () => {
@@ -609,15 +639,24 @@ export function Popup() {
         {isRecording && <div className="timer-glow" />}
       </div>
 
-      {/* Tab capture info */}
+      {/* Record area toggle */}
       {!isRecording && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '0 12px', marginBottom: '4px' }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.4 }}>
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-            <line x1="8" y1="21" x2="16" y2="21"/>
-            <line x1="12" y1="17" x2="12" y2="21"/>
-          </svg>
-          <span style={{ fontSize: '11px', opacity: 0.4 }}>Records current tab</span>
+        <div className="record-area-row">
+          <span className="record-area-label">Record area</span>
+          <div className="record-area-toggle">
+            <button
+              className={`record-area-btn ${mode === 'tab' ? 'active' : ''}`}
+              onClick={() => setMode('tab')}
+            >
+              Tab
+            </button>
+            <button
+              className={`record-area-btn ${mode === 'desktop' ? 'active' : ''}`}
+              onClick={() => setMode('desktop')}
+            >
+              Desktop
+            </button>
+          </div>
         </div>
       )}
 
@@ -691,14 +730,48 @@ export function Popup() {
             </button>
           </div>
         ) : (
-          <button
-            className={`btn-record ${loading ? 'disabled' : ''}`}
-            onClick={handleRecord}
-            disabled={loading}
-          >
-            <span className="btn-icon">●</span>
-            <span>Start Recording</span>
-          </button>
+          <>
+            <button
+              className={`btn-record ${loading ? 'disabled' : ''}`}
+              onClick={handleRecord}
+              disabled={loading}
+            >
+              <span className="btn-icon">●</span>
+              <span>Start Recording</span>
+            </button>
+            <div className="screenshot-actions">
+              <button
+                className={`btn-screenshot ${loading ? 'disabled' : ''}`}
+                onClick={() => handleScreenshot()}
+                disabled={loading}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2"/>
+                  <circle cx="8.5" cy="8.5" r="1.5"/>
+                  <path d="m21 15-5-5L5 21"/>
+                </svg>
+                <span>Screenshot</span>
+              </button>
+              <div className="screenshot-delay-group">
+                <button
+                  className="btn-screenshot-delay"
+                  onClick={() => handleScreenshot(3000)}
+                  disabled={loading}
+                  title="3 second delay — capture hover states"
+                >
+                  3s
+                </button>
+                <button
+                  className="btn-screenshot-delay"
+                  onClick={() => handleScreenshot(6000)}
+                  disabled={loading}
+                  title="6 second delay — capture hover states"
+                >
+                  6s
+                </button>
+              </div>
+            </div>
+          </>
         )}
       </div>
 

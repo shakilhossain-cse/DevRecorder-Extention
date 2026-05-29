@@ -57,6 +57,27 @@ export const api = {
     });
   },
 
+  async uploadScreenshot(recordingId: string, imageBlob: Blob): Promise<void> {
+    const urlRes = await authFetch(`${API_BASE}/recordings/${recordingId}/upload-url`, {
+      method: 'POST',
+      body: JSON.stringify({ contentType: 'image/png' }),
+    });
+    if (!urlRes.ok) throw new Error(`Failed to get upload URL: ${urlRes.status}`);
+    const { uploadUrl, key, videoUrl } = await urlRes.json();
+
+    const uploadRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      body: imageBlob,
+      headers: { 'Content-Type': 'image/png' },
+    });
+    if (!uploadRes.ok) throw new Error(`R2 upload failed: ${uploadRes.status}`);
+
+    await authFetch(`${API_BASE}/recordings/${recordingId}/confirm-upload`, {
+      method: 'POST',
+      body: JSON.stringify({ key, videoUrl, fileSizeBytes: imageBlob.size }),
+    });
+  },
+
   async uploadVideo(recordingId: string, videoBlob: Blob, _onProgress?: (pct: number) => void): Promise<void> {
     const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB per part
     const size = videoBlob.size;

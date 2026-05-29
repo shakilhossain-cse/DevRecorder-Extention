@@ -208,6 +208,54 @@ body {
   color: var(--accent);
 }
 
+/* ── Record Area Toggle ────────────────── */
+.record-area-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+}
+
+.record-area-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.record-area-toggle {
+  display: flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.record-area-btn {
+  padding: 5px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.record-area-btn:first-child {
+  border-right: 1px solid var(--border);
+}
+
+.record-area-btn.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.record-area-btn:hover:not(.active) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 /* ── Mic Button ────────────────────────── */
 .mic-btn {
   display: flex;
@@ -274,6 +322,73 @@ body {
 }
 
 .btn-record.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Screenshot Actions ────────────────── */
+.screenshot-actions {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.btn-screenshot {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-screenshot:hover {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.btn-screenshot.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.screenshot-delay-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.btn-screenshot-delay {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.btn-screenshot-delay:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.btn-screenshot-delay:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   pointer-events: none;

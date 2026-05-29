@@ -19,10 +19,13 @@ export const MSG = {
   RESUME_RECORDING: 'RESUME_RECORDING',
   COUNTDOWN_COMPLETE: 'COUNTDOWN_COMPLETE',
   INTERACTION_EVENT: 'INTERACTION_EVENT',
+  TAKE_SCREENSHOT: 'TAKE_SCREENSHOT',
+  SCREENSHOT_SAVED: 'SCREENSHOT_SAVED',
+  SCREENSHOT_SAVE: 'SCREENSHOT_SAVE',
 } as const;
 
 // ── Capture Mode ───────────────────────────
-export type CaptureMode = 'window' | 'region';
+export type CaptureMode = 'tab' | 'desktop' | 'region';
 
 export interface CropRect {
   x: number;
@@ -32,7 +35,7 @@ export interface CropRect {
 }
 
 // ── Event Types ────────────────────────────
-export type EventType = 'console' | 'network' | 'navigation' | 'device-info' | 'storage' | 'interaction';
+export type EventType = 'console' | 'network' | 'navigation' | 'device-info' | 'storage' | 'interaction' | 'screenshot';
 
 // ── Recording State ────────────────────────
 export type RecordingStatus = 'idle' | 'countdown' | 'recording' | 'paused' | 'stopping' | 'uploading';
@@ -189,6 +192,25 @@ export interface InteractionEventMsg {
   };
 }
 
+export interface TakeScreenshotMsg {
+  type: typeof MSG.TAKE_SCREENSHOT;
+  tabId: number;
+  tabTitle: string;
+  tabUrl: string;
+  delay?: number;
+}
+
+export interface ScreenshotSaveMsg {
+  type: typeof MSG.SCREENSHOT_SAVE;
+  recordingId: string;
+  imageDataUrl: string;
+}
+
+export interface ScreenshotSavedMsg {
+  type: typeof MSG.SCREENSHOT_SAVED;
+  recordingId: string;
+}
+
 export type ExtensionMessage =
   | StartRecordingMsg
   | StopRecordingMsg
@@ -205,4 +227,7 @@ export type ExtensionMessage =
   | PauseRecordingMsg
   | ResumeRecordingMsg
   | CountdownCompleteMsg
-  | InteractionEventMsg;
+  | InteractionEventMsg
+  | TakeScreenshotMsg
+  | ScreenshotSaveMsg
+  | ScreenshotSavedMsg;

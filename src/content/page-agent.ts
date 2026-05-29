@@ -6,6 +6,22 @@
   // Controlled by content.ts via postMessage
   let active = false;
 
+  // ── Buffers for screenshots (always active) ──────────
+  const MAX_CONSOLE_BUFFER = 50;
+  const MAX_NETWORK_BUFFER = 50;
+  const MAX_INTERACTION_BUFFER = 30;
+
+  if (!(window as any).__devrecorder_console_buffer) (window as any).__devrecorder_console_buffer = [];
+  if (!(window as any).__devrecorder_network_buffer) (window as any).__devrecorder_network_buffer = [];
+  if (!(window as any).__devrecorder_interaction_buffer) (window as any).__devrecorder_interaction_buffer = [];
+
+  const consoleBuffer: { level: string; args: string[]; stack: string; timestamp: number }[] =
+    (window as any).__devrecorder_console_buffer;
+  const networkBuffer: { url: string; method: string; status: number; duration: number; requestBody: string | null; responseBody: string | null; timestamp: number }[] =
+    (window as any).__devrecorder_network_buffer;
+  const interactionBuffer: { action: string; selector: string; tag: string; text?: string; timestamp: number }[] =
+    (window as any).__devrecorder_interaction_buffer;
+
   window.addEventListener('message', (e) => {
     if (e.source !== window || !e.data) return;
     if (e.data.source === 'devrecorder-control') {
@@ -54,20 +70,35 @@
   levels.forEach((level) => {
     console[level] = function (...args: unknown[]) {
       original[level](...args);
-      if (!active) return; // ← skip when not recording
 
       const serialized = args.slice(0, 10).map((arg) => {
         try {
-          if (arg instanceof Error) return arg.stack || arg.message;
+          if (arg === null || arg === undefined) return String(arg);
+          if (arg instanceof Error) return arg.stack || `${arg.name}: ${arg.message}`;
           if (typeof arg === 'object') {
-            const str = JSON.stringify(arg, null, 2);
-            return str.length > 5_000 ? str.slice(0, 5_000) + '… [truncated]' : str;
+            // Jam.dev approach: try JSON round-trip (strips non-serializable values safely)
+            try {
+              const str = JSON.stringify(JSON.parse(JSON.stringify(arg)), null, 2);
+              return str.length > 5_000 ? str.slice(0, 5_000) + '… [truncated]' : str;
+            } catch {
+              // Object can't be serialized — return a safe description
+              try { return `[${arg.constructor.name} object cannot be serialized]`; } catch {}
+              return '[Unserializable object]';
+            }
           }
           return String(arg);
         } catch {
           return '[Unserializable]';
         }
       });
+
+      const stack = new Error().stack?.split('\n').slice(2).join('\n') || '';
+
+      // Always buffer for screenshots (even when not recording)
+      consoleBuffer.push({ level, args: serialized, stack, timestamp: Date.now() });
+      if (consoleBuffer.length > MAX_CONSOLE_BUFFER) consoleBuffer.shift();
+
+      if (!active) return; // ← skip forwarding when not recording
 
       window.postMessage(
         {
@@ -76,7 +107,7 @@
           level,
           args: serialized,
           timestamp: Date.now(),
-          stack: new Error().stack?.split('\n').slice(2).join('\n') || '',
+          stack,
         },
         '*'
       );
@@ -84,31 +115,29 @@
   });
 
   window.addEventListener('error', (e) => {
+    const args = [`Uncaught ${e.error?.message || e.message}`];
+    const stack = e.error?.stack || `${e.filename}:${e.lineno}:${e.colno}`;
+    // Always buffer for screenshots
+    consoleBuffer.push({ level: 'error', args, stack, timestamp: Date.now() });
+    if (consoleBuffer.length > MAX_CONSOLE_BUFFER) consoleBuffer.shift();
+
     if (!active) return;
     window.postMessage(
-      {
-        source: 'devrecorder-page-agent',
-        type: 'console',
-        level: 'error',
-        args: [`Uncaught ${e.error?.message || e.message}`],
-        timestamp: Date.now(),
-        stack: e.error?.stack || `${e.filename}:${e.lineno}:${e.colno}`,
-      },
+      { source: 'devrecorder-page-agent', type: 'console', level: 'error', args, timestamp: Date.now(), stack },
       '*'
     );
   });
 
   window.addEventListener('unhandledrejection', (e) => {
+    const args = [`Unhandled Promise Rejection: ${e.reason?.message || e.reason}`];
+    const stack = e.reason?.stack || '';
+    // Always buffer for screenshots
+    consoleBuffer.push({ level: 'error', args, stack, timestamp: Date.now() });
+    if (consoleBuffer.length > MAX_CONSOLE_BUFFER) consoleBuffer.shift();
+
     if (!active) return;
     window.postMessage(
-      {
-        source: 'devrecorder-page-agent',
-        type: 'console',
-        level: 'error',
-        args: [`Unhandled Promise Rejection: ${e.reason?.message || e.reason}`],
-        timestamp: Date.now(),
-        stack: e.reason?.stack || '',
-      },
+      { source: 'devrecorder-page-agent', type: 'console', level: 'error', args, timestamp: Date.now(), stack },
       '*'
     );
   });
@@ -161,13 +190,16 @@
 
   // Click tracking
   document.addEventListener('click', (e) => {
-    if (!active) return;
     const target = e.target;
     if (!(target instanceof Element)) return;
-    // Skip clicks on the devrecorder UI itself
     if (target.closest('[data-devrecorder]')) return;
 
     const info = describeElement(target);
+    // Always buffer for screenshots
+    interactionBuffer.push({ action: 'click', selector: info.selector, tag: info.tag, text: info.text, timestamp: Date.now() });
+    if (interactionBuffer.length > MAX_INTERACTION_BUFFER) interactionBuffer.shift();
+
+    if (!active) return;
     window.postMessage({
       source: 'devrecorder-page-agent',
       type: 'interaction',
@@ -239,8 +271,6 @@
   const originalFetch = window.fetch.bind(window);
 
   window.fetch = async function (...args: Parameters<typeof fetch>) {
-    if (!active) return originalFetch(...args); // ← pass through when not recording
-
     const input = args[0];
     const init = args[1];
 
@@ -255,15 +285,18 @@
     const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
 
     let requestBody: string | null = null;
-    if (init?.body) {
-      requestBody = extractBody(init.body);
-    } else if (input instanceof Request && input.method !== 'GET' && input.method !== 'HEAD') {
-      try {
-        const clonedReq = input.clone();
-        requestBody = await clonedReq.text();
-      } catch { /* body already consumed */ }
-    }
+    try {
+      if (init?.body) {
+        requestBody = extractBody(init.body);
+      } else if (input instanceof Request && input.method !== 'GET' && input.method !== 'HEAD') {
+        try {
+          const clonedReq = input.clone();
+          requestBody = await clonedReq.text();
+        } catch { /* body already consumed */ }
+      }
+    } catch {}
 
+    const fetchStart = Date.now();
     try {
       const response = await originalFetch(...args);
 
@@ -274,7 +307,6 @@
           const cl = parseInt(response.headers.get('content-length') || '0', 10);
           const isText = ct.includes('json') || ct.includes('text') || ct.includes('xml') || ct.includes('html')
             || ct.includes('javascript') || ct.includes('form-urlencoded') || ct === '';
-          // Only clone if text-like and not too large (skip binary, images, video, etc.)
           if (isText && cl < 500_000) {
             const clone = response.clone();
             const text = await clone.text();
@@ -282,16 +314,22 @@
           }
         } catch { /* can't read */ }
 
-        window.postMessage({
-          source: 'devrecorder-page-agent',
-          type: 'network-response',
-          url,
-          method,
-          status: response.status,
-          requestBody: redactBody(requestBody),
-          responseBody: redactBody(responseBody),
-          timestamp: Date.now(),
-        }, '*');
+        const redactedReq = redactBody(requestBody);
+        const redactedRes = redactBody(responseBody);
+
+        // Always buffer for screenshots
+        networkBuffer.push({ url, method, status: response.status, duration: Date.now() - fetchStart, requestBody: redactedReq, responseBody: redactedRes, timestamp: Date.now() });
+        if (networkBuffer.length > MAX_NETWORK_BUFFER) networkBuffer.shift();
+
+        if (active) {
+          window.postMessage({
+            source: 'devrecorder-page-agent',
+            type: 'network-response',
+            url, method, status: response.status,
+            requestBody: redactedReq, responseBody: redactedRes,
+            timestamp: Date.now(),
+          }, '*');
+        }
       } catch { /* never break the app's fetch */ }
 
       return response;
@@ -315,12 +353,11 @@
 
   OrigXHR.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
     const meta = xhrMeta.get(this);
-    if (meta && active) { // ← only intercept when recording
+    if (meta) {
       const requestBody: string | null = extractBody(body);
+      const sendTime = Date.now();
 
-      // Use { once: true } to auto-remove listener after firing  prevents accumulation
       this.addEventListener('load', function () {
-        if (!active) return;
         try {
           let responseBody: string | null = null;
           try {
@@ -332,16 +369,22 @@
             }
           } catch { /* can't read */ }
 
-          window.postMessage({
-            source: 'devrecorder-page-agent',
-            type: 'network-response',
-            url: meta.url,
-            method: meta.method,
-            status: this.status,
-            requestBody: redactBody(requestBody),
-            responseBody: redactBody(responseBody),
-            timestamp: Date.now(),
-          }, '*');
+          const redactedReq = redactBody(requestBody);
+          const redactedRes = redactBody(responseBody);
+
+          // Always buffer for screenshots
+          networkBuffer.push({ url: meta.url, method: meta.method, status: this.status, duration: Date.now() - sendTime, requestBody: redactedReq, responseBody: redactedRes, timestamp: Date.now() });
+          if (networkBuffer.length > MAX_NETWORK_BUFFER) networkBuffer.shift();
+
+          if (active) {
+            window.postMessage({
+              source: 'devrecorder-page-agent',
+              type: 'network-response',
+              url: meta.url, method: meta.method, status: this.status,
+              requestBody: redactedReq, responseBody: redactedRes,
+              timestamp: Date.now(),
+            }, '*');
+          }
         } catch { /* never break the app's XHR */ }
       }, { once: true });
     }

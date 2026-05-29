@@ -212,8 +212,22 @@ chrome.runtime.onMessage.addListener(
         }
         return false;
 
+      case MSG.TAKE_SCREENSHOT:
+        takeScreenshot(msg.tabId, msg.tabTitle, msg.tabUrl, (msg as any).delay).then(sendResponse);
+        return true;
+
+      case MSG.SCREENSHOT_SAVE:
+        handleScreenshotSave((msg as any).recordingId, (msg as any).imageDataUrl, (msg as any).title, (msg as any).description).then(sendResponse);
+        return true;
+
+      case 'SCREENSHOT_CAPTURE' as any:
+        handleScreenshotCapture((msg as any).cropRect, (msg as any).delay, _sender.tab?.id).then(sendResponse);
+        return true;
+
       case MSG.COUNTDOWN_COMPLETE:
         if (recording.status === 'countdown') {
+          // Resume the media recorder (was paused during countdown so countdown isn't captured)
+          chrome.runtime.sendMessage({ type: MSG.RESUME_RECORDING }).catch(() => {});
           recording.status = 'recording';
           recording.startTime = Date.now();
           persistRecordingState();
@@ -264,6 +278,11 @@ chrome.runtime.onMessage.addListener(
         handleMicPermission().then(sendResponse);
         return true;
 
+      case 'GET_VIDEO_DATA' as any:
+        // Forward to offscreen document which holds the video blob
+        chrome.runtime.sendMessage({ type: 'GET_VIDEO_DATA' }).then(sendResponse).catch(() => sendResponse({ success: false }));
+        return true;
+
       default: {
         const raw = msg as any;
         if (raw.type === 'MIC_PERMISSION_RESULT') {
@@ -295,10 +314,15 @@ async function startRecording(
   tabId: number,
   tabTitle: string,
   tabUrl: string,
-  captureMode: CaptureMode = 'window',
+  captureMode: CaptureMode = 'tab',
 ): Promise<{ success: boolean; recordingId?: string; error?: string }> {
   if (recording.status !== 'idle') {
     return { success: false, error: 'Already recording' };
+  }
+
+  if (captureMode === 'desktop') {
+    // Desktop mode — use getDisplayMedia (shows picker for screen/window)
+    return beginRecording(tabId, tabTitle, tabUrl, undefined, true);
   }
 
   if (captureMode === 'region') {
@@ -318,8 +342,8 @@ async function startRecording(
     });
   }
 
-  // Window mode  start directly
-  return beginRecording(tabId, tabTitle, tabUrl);
+  // Tab mode  start directly
+  return beginRecording(tabId, tabTitle, tabUrl, undefined, false);
 }
 
 async function beginRecording(
@@ -327,6 +351,7 @@ async function beginRecording(
   tabTitle: string,
   tabUrl: string,
   cropRect?: CropRect,
+  desktopMode = false,
 ): Promise<{ success: boolean; recordingId?: string; error?: string }> {
   try {
     const now = Date.now();
@@ -347,8 +372,15 @@ async function beginRecording(
         recordingId: rec._id,
         cropRect,
       });
+    } else if (desktopMode) {
+      // Desktop mode — use getDisplayMedia (allows screen/window picker)
+      await chrome.runtime.sendMessage({
+        type: MSG.BEGIN_CAPTURE,
+        recordingId: rec._id,
+        desktopMode: true,
+      });
     } else {
-      // Window/Tab mode — use tabCapture for instant recording (no picker)
+      // Tab mode — use tabCapture for instant recording (no picker)
       const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
       await chrome.runtime.sendMessage({
         type: MSG.BEGIN_TAB_CAPTURE,
@@ -368,15 +400,6 @@ async function beginRecording(
       return { success: false, error: String(captureError) };
     }
 
-    // User granted permission — enter countdown state (like Jam.dev)
-    recording = {
-      status: 'countdown',
-      id: rec._id,
-      tabId,
-      startTime: null, // will be set when countdown completes
-    };
-    persistRecordingState();
-
     startNetworkListeners();
     startNavigationListeners();
 
@@ -389,7 +412,7 @@ async function beginRecording(
       // Content script may already be injected via manifest
     }
 
-    // Activate page-agent on this tab (it starts inactive to avoid perf overhead)
+    // Activate page-agent on this tab
     try {
       await chrome.scripting.executeScript({
         target: { tabId },
@@ -397,18 +420,47 @@ async function beginRecording(
       });
     } catch { /* non-critical */ }
 
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['content/drawing-overlay.js'],
-      });
-      injectedTabs.add(tabId);
-    } catch {
-      // Non-critical
-    }
+    if (desktopMode) {
+      // Desktop mode: skip countdown, start recording immediately
+      recording = {
+        status: 'recording',
+        id: rec._id,
+        tabId,
+        startTime: Date.now(),
+      };
+      persistRecordingState();
+      chrome.action.setBadgeText({ text: 'REC' });
+      chrome.action.setBadgeBackgroundColor({ color: '#dc3232' });
 
-    chrome.action.setBadgeText({ text: '...' });
-    chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['content/drawing-overlay.js'],
+        });
+        injectedTabs.add(tabId);
+      } catch {}
+    } else {
+      // Tab mode: pause recorder during countdown so countdown isn't captured
+      chrome.runtime.sendMessage({ type: MSG.PAUSE_RECORDING }).catch(() => {});
+
+      recording = {
+        status: 'countdown',
+        id: rec._id,
+        tabId,
+        startTime: null,
+      };
+      persistRecordingState();
+      chrome.action.setBadgeText({ text: '...' });
+      chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['content/drawing-overlay.js'],
+        });
+        injectedTabs.add(tabId);
+      } catch {}
+    }
     startKeepalive();
 
     // Capture device info at recording start
@@ -504,8 +556,16 @@ async function stopRecording(): Promise<{
     if (savedTabId && recId) {
       const shareLink = `https://www.devrecorder.com/share/${recId}`;
       const viewLink = `https://www.devrecorder.com/recordings/${recId}`;
+
+      // Capture a screenshot of the tab as the video preview thumbnail
+      let previewThumb = '';
+      try {
+        const tab = await chrome.tabs.get(savedTabId);
+        previewThumb = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 80 });
+      } catch {}
+
       chrome.storage.session.set({
-        devrecorderSavedModal: { recId, shareLink, viewLink },
+        devrecorderSavedModal: { recId, shareLink, viewLink, previewThumb },
       }).catch(() => {});
       chrome.scripting.executeScript({
         target: { tabId: savedTabId },
@@ -520,7 +580,45 @@ async function stopRecording(): Promise<{
 }
 
 function onRecordingSaved(recordingId: string, duration: number): void {
+  // If recording was stopped externally (e.g. "Stop sharing" button),
+  // the status will still be 'recording'/'countdown'/'paused' — need full cleanup
+  const wasExternalStop = recording.status === 'recording' || recording.status === 'paused' || recording.status === 'countdown';
+  const savedTabId = recording.tabId;
+
   api.updateRecording(recordingId, { duration }).catch(() => {});
+
+  if (wasExternalStop) {
+    // Flush events
+    flushEvents();
+    // Deactivate page-agent
+    if (savedTabId) deactivatePageAgent(savedTabId);
+    stopNetworkListeners();
+    stopNavigationListeners();
+    // Remove drawing overlay
+    removeOverlayFromAllTabs();
+
+    // Inject saved modal (same as normal stopRecording flow)
+    if (savedTabId && recordingId) {
+      const shareLink = `https://www.devrecorder.com/share/${recordingId}`;
+      const viewLink = `https://www.devrecorder.com/recordings/${recordingId}`;
+
+      let previewThumb = '';
+      chrome.tabs.get(savedTabId).then((tab) => {
+        return chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 80 });
+      }).then((thumb) => {
+        previewThumb = thumb;
+      }).catch(() => {}).finally(() => {
+        chrome.storage.session.set({
+          devrecorderSavedModal: { recId: recordingId, shareLink, viewLink, previewThumb },
+        }).catch(() => {});
+        chrome.scripting.executeScript({
+          target: { tabId: savedTabId },
+          files: ['content/saved-modal.js'],
+        }).catch(() => {});
+      });
+    }
+  }
+
   recording = { status: 'idle', id: null, tabId: null, startTime: null };
   persistRecordingState();
   chrome.action.setBadgeText({ text: '' });
@@ -530,7 +628,7 @@ function onRecordingSaved(recordingId: string, duration: number): void {
   eventBuffer = [];
   responseBodyBuffer.length = 0;
   pendingRequests.clear();
-  // Notify popup that upload is done (via storage so it works even if popup was reopened)
+  // Notify popup that upload is done
   chrome.storage.session.set({ uploadComplete: { recordingId, timestamp: Date.now() } });
 }
 
@@ -1158,6 +1256,428 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     }
   }
 });
+
+// ── Screenshot Capture ──────────────────────────────
+// Pending screenshot info (stored when popup triggers, used after selector completes)
+let pendingScreenshotTab: { tabId: number; tabTitle: string; tabUrl: string } | null = null;
+
+async function takeScreenshot(
+  tabId: number,
+  tabTitle: string,
+  tabUrl: string,
+  delay?: number,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    // Store tab info for when the selector reports back
+    pendingScreenshotTab = { tabId, tabTitle, tabUrl };
+
+    // Store delay if provided (selector will read it)
+    if (delay && delay > 0) {
+      await chrome.storage.session.set({ devrecorderScreenshotDelay: delay });
+    }
+
+    // Inject the selector overlay (click or drag to screenshot)
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content/screenshot-selector.js'],
+    });
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+async function handleScreenshotCapture(
+  cropRect: { x: number; y: number; width: number; height: number } | null,
+  delay: number,
+  senderTabId?: number,
+): Promise<{ success: boolean; error?: string }> {
+  const tabInfo = pendingScreenshotTab;
+  const tabId = senderTabId || tabInfo?.tabId;
+  if (!tabId) return { success: false, error: 'No tab' };
+  pendingScreenshotTab = null;
+
+  try {
+    // Optional delay for capturing hover states
+    if (delay && delay > 0) {
+      await new Promise((r) => setTimeout(r, delay));
+    }
+
+    // Capture the visible tab as PNG
+    const tab = await chrome.tabs.get(tabId);
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: 'png',
+    });
+
+    // If crop rect provided, crop the image
+    let finalDataUrl = dataUrl;
+    if (cropRect && cropRect.width > 0 && cropRect.height > 0) {
+      // We'll crop in the content script since service worker has no canvas
+      // Store full image + crop rect for the editor to handle
+      await chrome.storage.session.set({
+        devrecorderScreenshotCrop: cropRect,
+      });
+    }
+
+    // Create a recording entry
+    const title = tabInfo?.tabTitle || tab.title || 'Untitled';
+    const url = tabInfo?.tabUrl || tab.url || '';
+
+    const rec = await api.createRecording({
+      title: `Screenshot: ${title}`,
+      url,
+      startTime: Date.now(),
+      duration: 0,
+    });
+
+    // Capture all context (device info, console, network, storage) in parallel
+    captureScreenshotContext(rec._id, tabId);
+
+    // Store screenshot data for the editor
+    await chrome.storage.session.set({
+      devrecorderScreenshot: {
+        dataUrl: finalDataUrl,
+        recordingId: rec._id,
+      },
+    });
+
+    // Inject the screenshot editor
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content/screenshot-editor.js'],
+    });
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+async function handleScreenshotSave(
+  screenshotRecordingId: string,
+  imageDataUrl: string,
+  title?: string,
+  description?: string,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    // Update title if provided
+    if (title) {
+      await api.updateRecording(screenshotRecordingId, { title } as any).catch(() => {});
+    }
+
+    // Convert data URL to Blob
+    const res = await fetch(imageDataUrl);
+    const blob = await res.blob();
+
+    // Upload using the screenshot upload method
+    await api.uploadScreenshot(screenshotRecordingId, blob);
+
+    // Notify completion
+    chrome.storage.session.set({
+      uploadComplete: { recordingId: screenshotRecordingId, timestamp: Date.now() },
+    }).catch(() => {});
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+async function captureScreenshotContext(screenshotRecordingId: string, tabId: number): Promise<void> {
+  const events: { type: string; relativeTime: number; data: Record<string, any> }[] = [];
+
+  // ── 1. Device Info ────────────────────────────────
+  try {
+    const [cpuInfo, memInfo] = await Promise.all([
+      chrome.system.cpu.getInfo().catch(() => null),
+      chrome.system.memory.getInfo().catch(() => null),
+    ]);
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => ({
+        userAgent: navigator.userAgent,
+        language: navigator.language,
+        languages: navigator.languages,
+        platform: navigator.platform,
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        deviceMemory: (navigator as any).deviceMemory,
+        onLine: navigator.onLine,
+        connectionType: (navigator as any).connection?.effectiveType || null,
+        connectionDownlink: (navigator as any).connection?.downlink || null,
+        screenWidth: screen.width,
+        screenHeight: screen.height,
+        devicePixelRatio: window.devicePixelRatio,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        colorScheme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        timezoneOffset: new Date().getTimezoneOffset(),
+      }),
+    });
+
+    const browserInfo = results?.[0]?.result || {};
+
+    events.push({
+      type: 'device-info',
+      relativeTime: 0,
+      data: {
+        ...browserInfo,
+        cpuArchName: cpuInfo?.archName || null,
+        cpuModelName: cpuInfo?.modelName || null,
+        cpuNumProcessors: cpuInfo?.numOfProcessors || null,
+        memoryCapacityBytes: memInfo?.capacity || null,
+        memoryAvailableBytes: memInfo?.availableCapacity || null,
+      },
+    });
+  } catch { /* non-critical */ }
+
+  // ── 2. Console Logs (intercept and collect from page) ──
+  try {
+    const consoleResults = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => {
+        const logs: { level: string; args: string[]; stack: string }[] = [];
+
+        // Collect from our buffer if page-agent stored any
+        const buf = (window as any).__devrecorder_console_buffer;
+        if (Array.isArray(buf)) {
+          buf.forEach((entry: any) => {
+            logs.push({
+              level: entry.level || 'log',
+              args: Array.isArray(entry.args) ? entry.args : [String(entry.args)],
+              stack: entry.stack || '',
+            });
+          });
+        }
+
+        // Also check for JS errors in the page's error overlay elements
+        const errorEls = document.querySelectorAll(
+          '[class*="error" i]:not(style):not(script), [id*="error" i]:not(style):not(script)'
+        );
+        const seen = new Set<string>();
+        errorEls.forEach((el) => {
+          const text = (el as HTMLElement).innerText?.trim();
+          if (text && text.length > 5 && text.length < 500 && !seen.has(text)) {
+            seen.add(text);
+            logs.push({ level: 'error', args: [text], stack: '' });
+          }
+        });
+
+        return logs.slice(0, 50);
+      },
+    });
+
+    const consoleLogs = consoleResults?.[0]?.result || [];
+    consoleLogs.forEach((log: any) => {
+      events.push({
+        type: 'console',
+        relativeTime: 0,
+        data: { level: log.level, args: log.args, stack: log.stack || '' },
+      });
+    });
+  } catch { /* non-critical */ }
+
+  // ── 3. Network Requests (from page-agent buffer — has method, status, bodies) ──
+  try {
+    const networkResults = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => {
+        const buf = (window as any).__devrecorder_network_buffer;
+        if (!Array.isArray(buf)) return [];
+        return buf.map((e: any) => ({
+          url: e.url,
+          method: e.method,
+          status: e.status,
+          duration: e.duration,
+          requestBody: e.requestBody,
+          responseBody: e.responseBody,
+          timestamp: e.timestamp,
+        }));
+      },
+    });
+
+    const networkEntries = networkResults?.[0]?.result || [];
+    networkEntries.forEach((entry: any) => {
+      events.push({
+        type: 'network',
+        relativeTime: 0,
+        data: {
+          url: entry.url,
+          method: entry.method || 'GET',
+          resourceType: 'xmlhttprequest',
+          status: entry.status || 0,
+          statusLine: entry.status ? `${entry.status}` : '',
+          duration: entry.duration || 0,
+          initiator: '',
+          error: null,
+          requestHeaders: {},
+          responseHeaders: {},
+          requestBody: entry.requestBody || null,
+          responseBody: entry.responseBody || null,
+        },
+      });
+    });
+
+    // Also add Performance API entries for non-XHR resources (scripts, css, images, etc.)
+    const perfResults = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+        const typeMap: Record<string, string> = {
+          script: 'script', css: 'stylesheet', link: 'stylesheet',
+          img: 'image', image: 'image', font: 'font',
+          video: 'media', audio: 'media',
+        };
+        return entries
+          .filter(e => e.initiatorType !== 'xmlhttprequest' && e.initiatorType !== 'fetch')
+          .slice(-50)
+          .map(e => {
+            let status = 0;
+            try { status = (e as any).responseStatus || 0; } catch {}
+            return {
+              url: e.name,
+              resourceType: typeMap[e.initiatorType] || e.initiatorType || 'other',
+              duration: Math.round(e.duration),
+              status,
+              transferSize: e.transferSize || 0,
+              startTime: Math.round(e.startTime),
+            };
+          });
+      },
+    });
+
+    const perfEntries = perfResults?.[0]?.result || [];
+    perfEntries.forEach((entry: any) => {
+      events.push({
+        type: 'network',
+        relativeTime: entry.startTime,
+        data: {
+          url: entry.url,
+          method: 'GET',
+          resourceType: entry.resourceType,
+          status: entry.status,
+          statusLine: entry.status ? `${entry.status}` : '',
+          duration: entry.duration,
+          initiator: '',
+          error: null,
+          requestHeaders: {},
+          responseHeaders: {},
+          requestBody: null,
+          responseBody: null,
+          transferSize: entry.transferSize,
+        },
+      });
+    });
+  } catch { /* non-critical */ }
+
+  // ── 3b. User Interactions (from page-agent buffer) ──
+  try {
+    const interactionResults = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => {
+        const buf = (window as any).__devrecorder_interaction_buffer;
+        if (!Array.isArray(buf)) return [];
+        return buf.map((e: any) => ({
+          action: e.action,
+          selector: e.selector,
+          tag: e.tag,
+          text: e.text,
+          timestamp: e.timestamp,
+        }));
+      },
+    });
+
+    const interactions = interactionResults?.[0]?.result || [];
+    interactions.forEach((entry: any) => {
+      events.push({
+        type: 'interaction',
+        relativeTime: 0,
+        data: {
+          action: entry.action,
+          selector: entry.selector,
+          tag: entry.tag,
+          text: entry.text,
+          attributes: {},
+          attrCount: 0,
+        },
+      });
+    });
+  } catch { /* non-critical */ }
+
+  // ── 4. Storage Snapshot (localStorage, sessionStorage, cookies) ──
+  try {
+    const storageResults = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const SENSITIVE = /^(password|passwd|secret|token|access_token|refresh_token|api_key|apikey|api_secret|authorization|private_key)$/i;
+        function redactValue(key: string, val: string): string {
+          return SENSITIVE.test(key) ? '[REDACTED]' : (val.length > 500 ? val.slice(0, 500) + '\u2026' : val);
+        }
+
+        const local: Record<string, string> = {};
+        try {
+          for (let i = 0; i < localStorage.length && i < 50; i++) {
+            const key = localStorage.key(i);
+            if (key) local[key] = redactValue(key, localStorage.getItem(key) || '');
+          }
+        } catch {}
+
+        const session: Record<string, string> = {};
+        try {
+          for (let i = 0; i < sessionStorage.length && i < 50; i++) {
+            const key = sessionStorage.key(i);
+            if (key) session[key] = redactValue(key, sessionStorage.getItem(key) || '');
+          }
+        } catch {}
+
+        return {
+          localStorage: local,
+          localStorageCount: localStorage.length,
+          sessionStorage: session,
+          sessionStorageCount: sessionStorage.length,
+        };
+      },
+    });
+
+    const storageData = storageResults?.[0]?.result;
+    if (storageData) {
+      // Also capture cookies
+      let cookies: { name: string; domain: string; secure: boolean; httpOnly: boolean }[] = [];
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.url) {
+          const allCookies = await chrome.cookies.getAll({ url: tab.url });
+          cookies = allCookies.slice(0, 50).map((c) => ({
+            name: c.name,
+            domain: c.domain,
+            secure: c.secure,
+            httpOnly: c.httpOnly,
+          }));
+        }
+      } catch {}
+
+      events.push({
+        type: 'storage',
+        relativeTime: 0,
+        data: {
+          ...storageData,
+          cookies,
+          cookieCount: cookies.length,
+        },
+      });
+    }
+  } catch { /* non-critical */ }
+
+  // ── Send all events in one batch ──────────────────
+  if (events.length > 0) {
+    api.sendEvents(screenshotRecordingId, events).catch(() => {});
+  }
+}
 
 // Restore buffered events on service worker startup (in case SW was killed mid-recording)
 chrome.storage.session.get('eventBufferRecordingId').then(({ eventBufferRecordingId }) => {

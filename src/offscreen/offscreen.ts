@@ -5,7 +5,7 @@ import { fixWebmDuration } from './fix-webm-duration';
 
 let mediaRecorder: MediaRecorder | null = null;
 let chunks: Blob[] = [];
-let consolidatedBlob: Blob | null = null; // periodically merge chunks to reduce object count
+let consolidatedBlob: Blob | null = null;
 let recordingId: string | null = null;
 let startTime: number | null = null;
 let cropAnimId: number | null = null;
@@ -13,10 +13,25 @@ let consolidateIntervalId: ReturnType<typeof setInterval> | null = null;
 let videoTrackEndedHandler: (() => void) | null = null;
 let activeVideoTrack: MediaStreamTrack | null = null;
 
+// Store the last recorded blob so content scripts can request it for local playback
+let lastRecordedBlob: Blob | null = null;
+let blobReadyResolvers: ((blob: Blob) => void)[] = [];
+
+function waitForBlob(): Promise<Blob> {
+  if (lastRecordedBlob) return Promise.resolve(lastRecordedBlob);
+  return new Promise((resolve) => { blobReadyResolvers.push(resolve); });
+}
+
+function setBlobReady(blob: Blob) {
+  lastRecordedBlob = blob;
+  for (const resolve of blobReadyResolvers) resolve(blob);
+  blobReadyResolvers = [];
+}
+
 chrome.runtime.onMessage.addListener(
   (msg: any, _sender: any, sendResponse: any) => {
     if (msg.type === MSG.BEGIN_CAPTURE) {
-      startCapture(msg.recordingId, msg.cropRect);
+      startCapture(msg.recordingId, msg.cropRect, (msg as any).desktopMode);
       sendResponse({ success: true });
       return false;
     }
@@ -49,10 +64,28 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
 
+    // Serve the last recorded video blob for local playback
+    if (msg.type === 'GET_VIDEO_DATA') {
+      waitForBlob().then(async (blob) => {
+        try {
+          const buffer = await blob.arrayBuffer();
+          sendResponse({
+            success: true,
+            buffer: Array.from(new Uint8Array(buffer)),
+            mimeType: blob.type || 'video/webm',
+          });
+        } catch {
+          sendResponse({ success: false });
+        }
+        lastRecordedBlob = null;
+      });
+      return true; // async response
+    }
+
   }
 );
 
-async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
+async function startCapture(recId: string, cropRect?: CropRect, desktopMode = false): Promise<void> {
   recordingId = recId;
   startTime = null;
   chunks = [];
@@ -60,18 +93,20 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
 
   try {
     const displayStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: 30 },
+      video: desktopMode
+        ? { frameRate: 30, displaySurface: 'monitor' }
+        : { frameRate: 30 },
       audio: true,
       // @ts-expect-error  Chrome-specific options
       preferCurrentTab: false,
       surfaceSwitching: 'exclude',
       selfBrowserSurface: 'include',
-      monitorTypeSurfaces: 'exclude',
+      monitorTypeSurfaces: desktopMode ? 'include' : 'exclude',
       systemAudio: 'include',
     });
 
     const surface = displayStream.getVideoTracks()[0]?.getSettings()?.displaySurface;
-    if (surface === 'monitor') {
+    if (surface === 'monitor' && !desktopMode) {
       displayStream.getTracks().forEach((t) => t.stop());
       throw new Error('Please select a Window or Chrome Tab, not Entire Screen.');
     }
@@ -220,6 +255,7 @@ async function startCapture(recId: string, cropRect?: CropRect): Promise<void> {
         };
         try {
           const blob = await fixWebmDuration(rawBlob, duration);
+          setBlobReady(blob);
           await api.uploadVideo(currentRecId, blob, reportProgress);
         } catch {
           // Upload failed  still send RECORDING_SAVED so UI isn't stuck
@@ -375,6 +411,8 @@ async function startTabCapture(recId: string, streamId: string): Promise<void> {
         };
         try {
           const blob = await fixWebmDuration(rawBlob, duration);
+
+          setBlobReady(blob);
           await api.uploadVideo(currentRecId, blob, reportProgress);
         } catch {}
       }

@@ -11,6 +11,8 @@ const contentScripts = {
   'content/region-selector': resolve(__dirname, 'src/content/region-selector.ts'),
   'content/auth-detector': resolve(__dirname, 'src/content/auth-detector.ts'),
   'content/saved-modal': resolve(__dirname, 'src/content/saved-modal.ts'),
+  'content/screenshot-editor': resolve(__dirname, 'src/content/screenshot-editor.ts'),
+  'content/screenshot-selector': resolve(__dirname, 'src/content/screenshot-selector.ts'),
   'mic-permission': resolve(__dirname, 'src/mic-permission.ts'),
 };
 
