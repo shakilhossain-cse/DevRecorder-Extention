@@ -1,4 +1,5 @@
-const API_BASE = 'https://www.devrecorder.com/api';
+const API_BASE =  'https://www.devrecorder.com/api'
+
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -14,6 +15,7 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
 }
 
 async function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  console.log(`Making API request to ${url} with init:`, init);
   const headers = await getAuthHeaders();
   const res = await fetch(url, {
     ...init,
@@ -31,9 +33,15 @@ async function authFetch(url: string, init: RequestInit = {}): Promise<Response>
 export const api = {
   async createRecording(data: {
     title: string;
+    description?: string;
     url: string;
     startTime: number;
     duration: number;
+    mediaType?: 'video' | 'screenshot';
+    recordingSurface?: 'tab' | 'desktop' | 'region';
+    micEnabled?: boolean;
+    isIncognito?: boolean;
+    detectedLibs?: string[];
   }): Promise<{ _id: string }> {
     const res = await authFetch(`${API_BASE}/recordings`, {
       method: 'POST',
@@ -55,6 +63,34 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     });
+  },
+
+  async uploadThumbnail(recordingId: string, imageBlob: Blob): Promise<string | null> {
+    try {
+      const urlRes = await authFetch(`${API_BASE}/recordings/${recordingId}/upload-url`, {
+        method: 'POST',
+        body: JSON.stringify({ contentType: 'image/jpeg', isThumbnail: true }),
+      });
+      if (!urlRes.ok) return null;
+      const { uploadUrl, key, videoUrl: thumbnailUrl } = await urlRes.json();
+
+      const uploadRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        body: imageBlob,
+        headers: { 'Content-Type': 'image/jpeg' },
+      });
+      if (!uploadRes.ok) return null;
+
+      // Save thumbnail URL to the recording
+      await authFetch(`${API_BASE}/recordings/${recordingId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ thumbnailKey: key, thumbnailUrl }),
+      });
+
+      return thumbnailUrl;
+    } catch {
+      return null;
+    }
   },
 
   async uploadScreenshot(recordingId: string, imageBlob: Blob): Promise<void> {

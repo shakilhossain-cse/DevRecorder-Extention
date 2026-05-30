@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "vite build --watch",
+    "dev": "vite build --watch --mode development",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "publish": "node -e \"const v=require('./public/manifest.json').version; const {execSync}=require('child_process'); execSync('git tag ext-v'+v+' && git push origin ext-v'+v, {stdio:'inherit'});\""

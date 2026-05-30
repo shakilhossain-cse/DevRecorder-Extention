@@ -94,6 +94,9 @@
 
       const stack = new Error().stack?.split('\n').slice(2).join('\n') || '';
 
+      // Skip React hydration warnings — caused by other browser extensions, not user code
+      if (level === 'error' && serialized[0]?.includes('hydrat')) return;
+
       // Always buffer for screenshots (even when not recording)
       consoleBuffer.push({ level, args: serialized, stack, timestamp: Date.now() });
       if (consoleBuffer.length > MAX_CONSOLE_BUFFER) consoleBuffer.shift();

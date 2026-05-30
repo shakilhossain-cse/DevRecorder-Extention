@@ -254,12 +254,18 @@ async function startCapture(recId: string, cropRect?: CropRect, desktopMode = fa
           chrome.storage.session.set({ uploadProgress: pct }).catch(() => {});
         };
         try {
+          console.log('[DevRecorder] Fixing WebM duration...', { rawSize: rawBlob.size, duration });
           const blob = await fixWebmDuration(rawBlob, duration);
+          console.log('[DevRecorder] Blob ready, size:', blob.size);
           setBlobReady(blob);
+          console.log('[DevRecorder] Uploading video for recording:', currentRecId);
           await api.uploadVideo(currentRecId, blob, reportProgress);
-        } catch {
-          // Upload failed  still send RECORDING_SAVED so UI isn't stuck
+          console.log('[DevRecorder] Upload complete!');
+        } catch (err) {
+          console.error('[DevRecorder] Upload failed:', err);
         }
+      } else {
+        console.warn('[DevRecorder] rawBlob is empty, skipping upload');
       }
 
       chrome.runtime.sendMessage({
@@ -410,11 +416,18 @@ async function startTabCapture(recId: string, streamId: string): Promise<void> {
           chrome.storage.session.set({ uploadProgress: pct }).catch(() => {});
         };
         try {
+          console.log('[DevRecorder:Tab] Fixing WebM duration...', { rawSize: rawBlob.size, duration });
           const blob = await fixWebmDuration(rawBlob, duration);
-
+          console.log('[DevRecorder:Tab] Blob ready, size:', blob.size);
           setBlobReady(blob);
+          console.log('[DevRecorder:Tab] Uploading video for recording:', currentRecId);
           await api.uploadVideo(currentRecId, blob, reportProgress);
-        } catch {}
+          console.log('[DevRecorder:Tab] Upload complete!');
+        } catch (err) {
+          console.error('[DevRecorder:Tab] Upload failed:', err);
+        }
+      } else {
+        console.warn('[DevRecorder:Tab] rawBlob is empty, skipping upload');
       }
 
       chrome.runtime.sendMessage({

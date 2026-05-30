@@ -138,7 +138,7 @@
   // Trim region (highlighted area)
   const trimRegion = document.createElement('div');
   trimRegion.style.cssText = `
-    position:absolute;top:0;height:100%;background:#a855f6;border-radius:4px;
+    position:absolute;top:0;height:100%;background:#ef4444;border-radius:4px;
     left:0%;width:100%;
   `;
 
@@ -288,17 +288,31 @@
   const rightFooter = document.createElement('div');
   rightFooter.style.cssText = 'padding:16px 24px;border-top:1px solid #f0f0f0;display:flex;align-items:center;justify-content:flex-end;gap:12px;';
 
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = `
+    padding:10px 20px;border-radius:10px;
+    border:1px solid #e4e4e7;background:#fff;color:#52525b;
+    font-size:14px;font-weight:500;
+    transition:all 0.15s;
+  `;
+  cancelBtn.onmouseenter = () => { cancelBtn.style.background = '#f4f4f5'; };
+  cancelBtn.onmouseleave = () => { cancelBtn.style.background = '#fff'; };
+  cancelBtn.onclick = destroy;
+
   const createBtn = document.createElement('button');
   createBtn.textContent = 'Create & copy link';
   createBtn.style.cssText = `
     padding:10px 24px;border-radius:10px;border:none;
-    background:linear-gradient(135deg, #a855f6, #7c3aed);color:#fff;
+    background:linear-gradient(135deg, #ef4444, #dc2626);color:#fff;
     font-size:14px;font-weight:600;
-    transition:all 0.15s;box-shadow:0 2px 8px rgba(168,85,246,0.3);
+    transition:all 0.15s;box-shadow:0 2px 8px rgba(239,68,68,0.3);
   `;
-  createBtn.onmouseenter = () => { createBtn.style.transform = 'translateY(-1px)'; createBtn.style.boxShadow = '0 4px 16px rgba(168,85,246,0.4)'; };
-  createBtn.onmouseleave = () => { createBtn.style.transform = 'translateY(0)'; createBtn.style.boxShadow = '0 2px 8px rgba(168,85,246,0.3)'; };
+  createBtn.onmouseenter = () => { createBtn.style.transform = 'translateY(-1px)'; createBtn.style.boxShadow = '0 4px 16px rgba(239,68,68,0.4)'; };
+  createBtn.onmouseleave = () => { createBtn.style.transform = 'translateY(0)'; createBtn.style.boxShadow = '0 2px 8px rgba(239,68,68,0.3)'; };
   createBtn.onclick = handleCreate;
+
+  rightFooter.appendChild(cancelBtn);
   rightFooter.appendChild(createBtn);
 
   rightPanel.appendChild(titleSection);
@@ -318,15 +332,29 @@
     (createBtn as HTMLButtonElement).disabled = true;
 
     const title = titleInput.value.trim();
-    if (title && recId) {
+    const description = descInput.value.trim();
+    if (recId) {
       try {
         const { apiToken } = await chrome.storage.local.get('apiToken');
         if (apiToken) {
-          await fetch(`https://www.devrecorder.com/api/recordings/${recId}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiToken}` },
-            body: JSON.stringify({ title }),
-          });
+          const updateData: Record<string, unknown> = {};
+          if (title) updateData.title = title;
+          if (description) updateData.description = description;
+          // Send trim range if user adjusted it
+          if (video.duration && (trimStart > 0 || trimEnd < 1)) {
+            updateData.clipBetweenMs = [
+              Math.round(trimStart * video.duration * 1000),
+              Math.round(trimEnd * video.duration * 1000),
+            ];
+          }
+          if (Object.keys(updateData).length > 0) {
+            const apiBase = await chrome.storage.local.get('apiBase').then(r => r.apiBase).catch(() => null) || 'https://www.devrecorder.com/api';
+            await fetch(`${apiBase}/recordings/${recId}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiToken}` },
+              body: JSON.stringify(updateData),
+            });
+          }
         }
       } catch {}
     }
@@ -387,18 +415,20 @@
     backdrop.remove();
     style.remove();
     document.removeEventListener('keydown', onKeydown);
-    chrome.storage.session.remove('devrecorderSavedModal').catch(() => {});
+    try { chrome.storage.session.remove('devrecorderSavedModal').catch(() => {}); } catch {}
 
     // If user closed without saving, delete the recording from DB
     if (!saved && recId) {
-      chrome.storage.local.get('apiToken').then(({ apiToken }) => {
-        if (apiToken) {
-          fetch(`https://www.devrecorder.com/api/recordings/${recId}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${apiToken}` },
-          }).catch(() => {});
-        }
-      }).catch(() => {});
+      try {
+        chrome.storage.local.get('apiToken').then(({ apiToken }) => {
+          if (apiToken) {
+            fetch(`https://www.devrecorder.com/api/recordings/${recId}`, {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${apiToken}` },
+            }).catch(() => {});
+          }
+        }).catch(() => {});
+      } catch {}
     }
   }
 

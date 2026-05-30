@@ -7,10 +7,11 @@
   let isDrawing = false;
   let startX = 0;
   let startY = 0;
-  let currentColor = '#a855f6';
-  let currentWidth = 3;
+  let currentColor = '#ef4444';
+  let currentWidth = 4;
   let snapshot: ImageData | null = null;
   let screenshotDataUrl = '';
+  let fullscreenDataUrl = '';
   let recordingId = '';
   let includeFullscreen = true;
   let saved = false;
@@ -181,7 +182,7 @@
     display:none;z-index:10;
     gap:6px;
   `;
-  const colors = ['#a855f6', '#ef4444', '#eab308', '#22c55e', '#3b82f6', '#000000'];
+  const colors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#000000'];
   colors.forEach((c) => {
     const swatch = document.createElement('button');
     swatch.style.cssText = `
@@ -230,6 +231,42 @@
 
   toolbar.appendChild(makeSep());
 
+  // Stroke size buttons
+  const sizes = [
+    { value: 2, label: 'S', title: 'Thin stroke' },
+    { value: 4, label: 'M', title: 'Medium stroke' },
+    { value: 8, label: 'L', title: 'Thick stroke' },
+  ];
+  const sizeBtns: HTMLButtonElement[] = [];
+  sizes.forEach(({ value, label, title }) => {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.title = title;
+    btn.style.cssText = `
+      width:32px;height:32px;border:none;border-radius:8px;
+      background:${value === currentWidth ? '#f3f4f6' : 'transparent'};
+      color:${value === currentWidth ? '#18181b' : '#a1a1aa'};
+      font-size:11px;font-weight:700;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;
+      transition:all 0.12s;padding:0;
+    `;
+    btn.onmouseenter = () => { if (value !== currentWidth) btn.style.background = '#f3f4f6'; };
+    btn.onmouseleave = () => { if (value !== currentWidth) btn.style.background = 'transparent'; };
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      currentWidth = value;
+      sizeBtns.forEach((b, i) => {
+        const active = sizes[i].value === value;
+        b.style.background = active ? '#f3f4f6' : 'transparent';
+        b.style.color = active ? '#18181b' : '#a1a1aa';
+      });
+    };
+    sizeBtns.push(btn);
+    toolbar.appendChild(btn);
+  });
+
+  toolbar.appendChild(makeSep());
+
   // Undo button
   const undoBtn = makeToolBtn('<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>', 'Undo');
   undoBtn.onclick = (e) => { e.stopPropagation(); undo(); };
@@ -254,7 +291,7 @@
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
   checkbox.checked = true;
-  checkbox.style.cssText = 'width:16px;height:16px;accent-color:#a855f6;cursor:pointer;';
+  checkbox.style.cssText = 'width:16px;height:16px;accent-color:#ef4444;cursor:pointer;';
   checkbox.onchange = () => { includeFullscreen = checkbox.checked; fullThumb.style.opacity = checkbox.checked ? '1' : '0.4'; };
 
   // Fullscreen thumbnail
@@ -334,18 +371,31 @@
     display:flex;align-items:center;justify-content:flex-end;gap:12px;
   `;
 
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = `
+    padding:10px 20px;border-radius:10px;
+    border:1px solid #e4e4e7;background:#fff;color:#52525b;
+    font-size:14px;font-weight:500;cursor:pointer;
+    transition:all 0.15s;
+  `;
+  cancelBtn.onmouseenter = () => { cancelBtn.style.background = '#f4f4f5'; };
+  cancelBtn.onmouseleave = () => { cancelBtn.style.background = '#fff'; };
+  cancelBtn.onclick = destroy;
+
   const createBtn = document.createElement('button');
   createBtn.textContent = 'Create & copy link';
   createBtn.style.cssText = `
     padding:10px 24px;border-radius:10px;border:none;
-    background:linear-gradient(135deg, #a855f6, #7c3aed);color:#fff;
+    background:linear-gradient(135deg, #ef4444, #dc2626);color:#fff;
     font-size:14px;font-weight:600;cursor:pointer;
-    transition:all 0.15s;box-shadow:0 2px 8px rgba(168,85,246,0.3);
+    transition:all 0.15s;box-shadow:0 2px 8px rgba(239,68,68,0.3);
   `;
-  createBtn.onmouseenter = () => { createBtn.style.transform = 'translateY(-1px)'; createBtn.style.boxShadow = '0 4px 16px rgba(168,85,246,0.4)'; };
-  createBtn.onmouseleave = () => { createBtn.style.transform = 'translateY(0)'; createBtn.style.boxShadow = '0 2px 8px rgba(168,85,246,0.3)'; };
+  createBtn.onmouseenter = () => { createBtn.style.transform = 'translateY(-1px)'; createBtn.style.boxShadow = '0 4px 16px rgba(239,68,68,0.4)'; };
+  createBtn.onmouseleave = () => { createBtn.style.transform = 'translateY(0)'; createBtn.style.boxShadow = '0 2px 8px rgba(239,68,68,0.3)'; };
   createBtn.onclick = saveScreenshot;
 
+  rightFooter.appendChild(cancelBtn);
   rightFooter.appendChild(createBtn);
 
   rightPanel.appendChild(titleSection);
@@ -560,6 +610,7 @@
         type: 'SCREENSHOT_SAVE',
         recordingId,
         imageDataUrl: dataUrl,
+        fullscreenDataUrl: includeFullscreen ? fullscreenDataUrl : null,
         title: titleInput.value.trim() || 'Untitled Screenshot',
         description: descInput.value.trim(),
       });
@@ -608,14 +659,16 @@
 
     // If closed without saving, delete the recording from DB
     if (!saved && recordingId) {
-      chrome.storage.local.get('apiToken').then(({ apiToken }) => {
-        if (apiToken) {
-          fetch(`https://www.devrecorder.com/api/recordings/${recordingId}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${apiToken}` },
-          }).catch(() => {});
-        }
-      }).catch(() => {});
+      try {
+        chrome.storage.local.get('apiToken').then(({ apiToken }) => {
+          if (apiToken) {
+            fetch(`https://www.devrecorder.com/api/recordings/${recordingId}`, {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${apiToken}` },
+            }).catch(() => {});
+          }
+        }).catch(() => {});
+      } catch {}
     }
   }
 
@@ -628,6 +681,7 @@
       if (!data) { destroy(); return; }
 
       screenshotDataUrl = data.dataUrl;
+      fullscreenDataUrl = data.dataUrl; // Original full-page capture
       recordingId = data.recordingId;
 
       chrome.storage.session.remove(['devrecorderScreenshot', 'devrecorderScreenshotCrop']);

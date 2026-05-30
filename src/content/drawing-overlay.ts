@@ -2,7 +2,7 @@
   if (document.getElementById('devrecorder-control-bar')) return;
 
   // ── State ─────────────────────────────────────────
-  type Tool = 'pen' | 'line' | 'arrow' | 'circle' | 'rectangle' | 'square' | 'text' | 'blur';
+  type Tool = 'pen' | 'line' | 'arrow' | 'circle' | 'rectangle' | 'square' | 'text' | 'blur' | 'elementBlur';
   let currentTool: Tool | null = null;
   let isDrawing = false;
   let startX = 0;
@@ -358,14 +358,14 @@
   fab.id = 'devrecorder-fab';
   fab.style.cssText = 'display:none;';
 
-  // ── Toolbar ───────────────────────────────────────
+  // ── Toolbar (horizontal, centered at bottom) ─────
   const toolbar = document.createElement('div');
   toolbar.id = 'devrecorder-toolbar';
   toolbar.style.cssText = `
-    position:fixed;bottom:24px;left:24px;z-index:2147483647;
-    display:none;flex-direction:column;align-items:center;gap:3px;
-    width:42px;max-height:780px;overflow-y:auto;padding:6px 3px;
-    background:#1a1b2e;border-radius:12px;
+    position:fixed;bottom:32px;left:50%;transform:translateX(-50%);z-index:2147483647;
+    display:none;flex-direction:row;align-items:center;gap:4px;
+    height:48px;padding:0 12px;
+    background:#1a1b2e;border-radius:28px;
     box-shadow:0 8px 40px rgba(0,0,0,0.6),0 0 0 1px rgba(255,255,255,0.06);
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     user-select:none;pointer-events:all;
@@ -373,15 +373,15 @@
   `;
 
   // ── Helper: icon button ───────────────────────────
-  function makeBtn(svg: string, title: string, size = 30): HTMLButtonElement {
+  function makeBtn(svg: string, title: string, size = 34): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.innerHTML = svg;
     btn.title = title;
     btn.style.cssText = `
-      width:${size}px;height:${size}px;min-height:${size}px;border:none;border-radius:8px;
-      background:#252640;color:#e0e0e8;cursor:pointer;
+      width:${size}px;height:${size}px;border:none;border-radius:50%;
+      background:rgba(255,255,255,0.08);color:#e0e0e8;cursor:pointer;
       display:flex;align-items:center;justify-content:center;
-      transition:background 0.15s;padding:0;
+      transition:background 0.15s;padding:0;flex-shrink:0;
     `;
     btn.onmouseenter = () => { if (!btn.dataset.active) btn.style.background = '#333458'; };
     btn.onmouseleave = () => { if (!btn.dataset.active) btn.style.background = '#252640'; };
@@ -398,33 +398,199 @@
     square: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="1"/></svg>`,
     text: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="8" y1="20" x2="16" y2="20"/></svg>`,
     blur: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg>`,
+    elementBlur: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`,
   };
 
-  const toolOrder: Tool[] = ['pen', 'line', 'arrow', 'circle', 'rectangle', 'square', 'text', 'blur'];
+  const toolOrder: Tool[] = ['pen', 'line', 'arrow', 'circle', 'rectangle', 'square', 'text', 'blur', 'elementBlur'];
   const toolBtns = new Map<Tool, HTMLButtonElement>();
 
   // Selecting a tool activates drawing; selecting same tool deselects
+  // ── Element Blur state ───────────────────────────
+  let elementBlurActive = false;
+  const blurredElements = new Set<HTMLElement>();
+  const blurredSelectors: string[] = [];
+  let hoverOverlay: HTMLDivElement | null = null;
+
+  // CSS-based blur — inject a <style> tag so blurs apply instantly (no flicker)
+  const blurStyleEl = document.createElement('style');
+  blurStyleEl.id = 'devrecorder-blur-styles';
+  document.head.appendChild(blurStyleEl);
+
+  function updateBlurCSS() {
+    if (blurredSelectors.length === 0) {
+      blurStyleEl.textContent = '';
+      return;
+    }
+    blurStyleEl.textContent = blurredSelectors.map(sel => `${sel} { filter: blur(8px) !important; }`).join('\n');
+  }
+
+  // Build a unique CSS selector for an element
+  function escapeCSS(str: string): string {
+    return str.replace(/([^\w-])/g, '\\$1');
+  }
+
+  function getUniqueSelector(el: HTMLElement): string {
+    if (el.id) return `#${escapeCSS(el.id)}`;
+    const path: string[] = [];
+    let current: HTMLElement | null = el;
+    while (current && current !== document.body && current !== document.documentElement) {
+      let selector = current.tagName.toLowerCase();
+      if (current.id) {
+        path.unshift(`#${escapeCSS(current.id)}`);
+        break;
+      }
+      // Use nth-child for reliable matching (skip class names — they break with Tailwind colons)
+      const parent = current.parentElement;
+      if (parent) {
+        const idx = Array.from(parent.children).indexOf(current) + 1;
+        selector += `:nth-child(${idx})`;
+      }
+      path.unshift(selector);
+      current = current.parentElement;
+    }
+    return path.join(' > ');
+  }
+
+  // Save blurred selectors to storage
+  function persistBlurredSelectors() {
+    console.log('[DevRecorder] Saving blurred selectors:', [...blurredSelectors]);
+    chrome.storage.session.set({ devrecorderBlurredSelectors: [...blurredSelectors] }).catch(() => {});
+  }
+
+  // Restore blurred elements from storage — CSS-based, instant, no flicker
+  function restoreBlurredElements() {
+    try {
+      chrome.storage.session.get('devrecorderBlurredSelectors', (result) => {
+        if (chrome.runtime.lastError) return;
+        const selectors = result?.devrecorderBlurredSelectors as string[] | undefined;
+        if (!selectors || selectors.length === 0) return;
+        blurredSelectors.length = 0;
+        blurredSelectors.push(...selectors);
+        // Apply via CSS immediately — no need to find DOM elements
+        updateBlurCSS();
+      });
+    } catch {}
+  }
+
+  function createHoverOverlay(): HTMLDivElement {
+    const el = document.createElement('div');
+    el.style.cssText = `
+      position:fixed;z-index:2147483646;pointer-events:none;
+      border:2px solid #ef4444;background:rgba(239,68,68,0.08);
+      border-radius:4px;transition:all 0.08s ease-out;display:none;
+    `;
+    document.body.appendChild(el);
+    return el;
+  }
+
+  function onElementBlurMove(e: MouseEvent) {
+    if (!elementBlurActive) return;
+
+    // Skip when hovering over toolbar
+    const target = e.target as HTMLElement;
+    if (target.closest('#devrecorder-toolbar') || target.closest('#devrecorder-control-bar')) {
+      if (hoverOverlay) hoverOverlay.style.display = 'none';
+      return;
+    }
+
+    // Temporarily hide overlay so elementFromPoint doesn't pick it
+    if (hoverOverlay) hoverOverlay.style.display = 'none';
+    canvasContainer.style.display = 'none';
+    const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    canvasContainer.style.display = 'block';
+
+    if (!el || el === document.body || el === document.documentElement ||
+        el.closest('#devrecorder-control-bar') || el.closest('#devrecorder-toolbar')) {
+      if (hoverOverlay) hoverOverlay.style.display = 'none';
+      return;
+    }
+
+    const rect = el.getBoundingClientRect();
+    if (!hoverOverlay) hoverOverlay = createHoverOverlay();
+    hoverOverlay.style.display = 'block';
+    hoverOverlay.style.left = `${rect.left}px`;
+    hoverOverlay.style.top = `${rect.top}px`;
+    hoverOverlay.style.width = `${rect.width}px`;
+    hoverOverlay.style.height = `${rect.height}px`;
+  }
+
+  function onElementBlurClick(e: MouseEvent) {
+    if (!elementBlurActive) return;
+
+    // Don't intercept clicks on the toolbar or control bar
+    const target = e.target as HTMLElement;
+    if (target.closest('#devrecorder-toolbar') || target.closest('#devrecorder-control-bar')) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (hoverOverlay) hoverOverlay.style.display = 'none';
+    canvasContainer.style.display = 'none';
+    const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    canvasContainer.style.display = 'block';
+
+    if (!el || el === document.body || el === document.documentElement ||
+        el.closest('#devrecorder-control-bar') || el.closest('#devrecorder-toolbar')) return;
+
+    // Toggle blur on the element
+    const selector = getUniqueSelector(el);
+    if (blurredElements.has(el)) {
+      blurredElements.delete(el);
+      const idx = blurredSelectors.indexOf(selector);
+      if (idx !== -1) blurredSelectors.splice(idx, 1);
+    } else {
+      blurredElements.add(el);
+      blurredSelectors.push(selector);
+    }
+    updateBlurCSS();
+    persistBlurredSelectors();
+  }
+
+  function activateElementBlur() {
+    elementBlurActive = true;
+    document.addEventListener('mousemove', onElementBlurMove, true);
+    document.addEventListener('click', onElementBlurClick, true);
+    document.body.style.cursor = 'crosshair';
+  }
+
+  function deactivateElementBlur() {
+    elementBlurActive = false;
+    document.removeEventListener('mousemove', onElementBlurMove, true);
+    document.removeEventListener('click', onElementBlurClick, true);
+    document.body.style.cursor = '';
+    if (hoverOverlay) { hoverOverlay.remove(); hoverOverlay = null; }
+  }
+
   function selectTool(tool: Tool) {
     if (currentTool === tool) {
-      // Deselect
       deselectTool();
       return;
     }
+    // Deactivate previous element blur if switching away
+    if (currentTool === 'elementBlur') deactivateElementBlur();
+
     currentTool = tool;
     toolBtns.forEach((btn, t) => {
       const active = t === tool;
       btn.dataset.active = active ? '1' : '';
-      btn.style.background = active ? '#ef4444' : '#252640';
+      btn.style.background = active ? '#ef4444' : 'rgba(255,255,255,0.08)';
     });
     updateOpacityVisibility();
-    activateDrawing();
+
+    if (tool === 'elementBlur') {
+      deactivateDrawing();
+      activateElementBlur();
+    } else {
+      activateDrawing();
+    }
   }
 
   function deselectTool() {
+    if (currentTool === 'elementBlur') deactivateElementBlur();
     currentTool = null;
     toolBtns.forEach((btn) => {
       btn.dataset.active = '';
-      btn.style.background = '#252640';
+      btn.style.background = 'rgba(255,255,255,0.08)';
     });
     updateOpacityVisibility();
     deactivateDrawing();
@@ -440,7 +606,7 @@
   // Separator
   const sep = () => {
     const d = document.createElement('div');
-    d.style.cssText = 'width:26px;height:1px;background:#2a2b4a;margin:3px 0;flex-shrink:0;';
+    d.style.cssText = 'width:1px;height:24px;background:rgba(255,255,255,0.1);margin:0 4px;flex-shrink:0;';
     return d;
   };
   toolbar.appendChild(sep());
@@ -452,7 +618,7 @@
   colors.forEach((c) => {
     const btn = document.createElement('button');
     btn.style.cssText = `
-      width:18px;height:18px;min-height:18px;padding:0;cursor:pointer;flex-shrink:0;
+      width:20px;height:20px;padding:0;cursor:pointer;flex-shrink:0;
       border:2px solid ${c === currentColor ? '#fff' : 'transparent'};
       border-radius:50%;background:${c};transition:border-color 0.15s;
     `;
@@ -466,51 +632,39 @@
   });
   toolbar.appendChild(sep());
 
-  // ── Width slider (vertical) ───────────────────────
-  const sliderWrap = document.createElement('div');
-  sliderWrap.style.cssText = 'width:32px;height:60px;display:flex;align-items:center;justify-content:center;flex-shrink:0;';
-  const slider = document.createElement('input');
-  slider.type = 'range';
-  slider.min = '1';
-  slider.max = '12';
-  slider.value = String(currentWidth);
-  slider.style.cssText = 'width:50px;accent-color:#ef4444;cursor:pointer;transform:rotate(-90deg);transform-origin:center;';
-  slider.oninput = () => { currentWidth = Number(slider.value); };
-  sliderWrap.appendChild(slider);
-  toolbar.appendChild(sliderWrap);
-  toolbar.appendChild(sep());
+  // ── Stroke size buttons ──────────────────────────
+  const sizes = [
+    { value: 2, label: 'S' },
+    { value: 5, label: 'M' },
+    { value: 10, label: 'L' },
+  ];
+  const sizeBtns: HTMLButtonElement[] = [];
+  sizes.forEach(({ value, label }) => {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.title = `Stroke: ${label}`;
+    btn.style.cssText = `
+      width:28px;height:28px;border:none;border-radius:50%;
+      background:${value === currentWidth ? 'rgba(255,255,255,0.2)' : 'transparent'};
+      color:${value === currentWidth ? '#fff' : '#666'};
+      font-size:10px;font-weight:700;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;
+      transition:all 0.12s;padding:0;flex-shrink:0;
+    `;
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      currentWidth = value;
+      sizeBtns.forEach((b, i) => {
+        const active = sizes[i].value === value;
+        b.style.background = active ? 'rgba(255,255,255,0.2)' : 'transparent';
+        b.style.color = active ? '#fff' : '#666';
+      });
+    };
+    sizeBtns.push(btn);
+    toolbar.appendChild(btn);
+  });
 
-  // ── Blur opacity slider (vertical) ────────────────
-  const opacityLabel = document.createElement('div');
-  opacityLabel.textContent = '◐';
-  opacityLabel.title = 'Blur Intensity';
-  opacityLabel.style.cssText = 'color:#8a8ba8;font-size:16px;text-align:center;flex-shrink:0;display:none;';
-
-  const opacityWrap = document.createElement('div');
-  opacityWrap.style.cssText = 'width:32px;height:60px;display:none;align-items:center;justify-content:center;flex-shrink:0;';
-  const opacitySlider = document.createElement('input');
-  opacitySlider.type = 'range';
-  opacitySlider.min = '10';
-  opacitySlider.max = '100';
-  opacitySlider.value = String(Math.round(blurOpacity * 100));
-  opacitySlider.style.cssText = 'width:50px;accent-color:#9b59b6;cursor:pointer;transform:rotate(-90deg);transform-origin:center;';
-  opacitySlider.oninput = () => { blurOpacity = Number(opacitySlider.value) / 100; };
-  opacityWrap.appendChild(opacitySlider);
-
-  const opacitySep = sep();
-  opacitySep.style.display = 'none';
-
-  toolbar.appendChild(opacityLabel);
-  toolbar.appendChild(opacityWrap);
-  toolbar.appendChild(opacitySep);
-
-  // Show/hide opacity controls based on tool
-  function updateOpacityVisibility() {
-    const show = currentTool === 'blur';
-    opacityLabel.style.display = show ? 'block' : 'none';
-    opacityWrap.style.display = show ? 'flex' : 'none';
-    opacitySep.style.display = show ? 'block' : 'none';
-  }
+  function updateOpacityVisibility() {}
 
   // ── Clear button ──────────────────────────────────
   const clearBtn = makeBtn(
@@ -525,11 +679,7 @@
   };
   toolbar.appendChild(clearBtn);
 
-  // ── Escape hint ──────────────────────────────────
-  const escHint = document.createElement('div');
-  escHint.style.cssText = 'color:#555;font-size:9px;text-align:center;padding:2px 0;flex-shrink:0;letter-spacing:0.3px;';
-  escHint.textContent = 'ESC to close';
-  toolbar.appendChild(escHint);
+  toolbar.appendChild(sep());
 
   // ── Close button (X)  deselects tool & collapses ─
   const closeBtn = makeBtn(
@@ -792,11 +942,17 @@
   function destroy() {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-    // Remove any active text input left in the DOM
     if (activeTextInput && activeTextInput.isConnected) {
       activeTextInput.remove();
       activeTextInput = null;
     }
+    // Remove all blurs and clear storage
+    deactivateElementBlur();
+    blurredElements.clear();
+    blurredSelectors.length = 0;
+    blurStyleEl.remove();
+    chrome.storage.session.remove('devrecorderBlurredSelectors').catch(() => {});
+
     fab.remove();
     controlBar.remove();
     toolbar.remove();
@@ -806,7 +962,6 @@
     window.removeEventListener('resize', onResize);
     chrome.runtime.onMessage.removeListener(onMessage);
     chrome.runtime.onMessage.removeListener(onControlMessage);
-    // Clear this tab's saved canvas on recording stop
     chrome.storage.session.remove(canvasStorageKey);
   }
 
@@ -818,6 +973,9 @@
   document.body.appendChild(toolbar);
   resize();
 
-  // Restore previous drawings from other tabs
+  // Restore previous drawings and blurred elements
   restoreCanvasState();
+  restoreBlurredElements();
+
+  // CSS-based blur persists across SPA navigations automatically — no observer needed
 })();

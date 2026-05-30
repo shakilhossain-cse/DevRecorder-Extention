@@ -217,7 +217,7 @@ chrome.runtime.onMessage.addListener(
         return true;
 
       case MSG.SCREENSHOT_SAVE:
-        handleScreenshotSave((msg as any).recordingId, (msg as any).imageDataUrl, (msg as any).title, (msg as any).description).then(sendResponse);
+        handleScreenshotSave((msg as any).recordingId, (msg as any).imageDataUrl, (msg as any).title, (msg as any).description, (msg as any).fullscreenDataUrl).then(sendResponse);
         return true;
 
       case 'SCREENSHOT_CAPTURE' as any:
@@ -356,11 +356,66 @@ async function beginRecording(
   try {
     const now = Date.now();
 
+    // Detect incognito mode
+    let isIncognito = false;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      isIncognito = tab.incognito;
+    } catch {}
+
+    // Check mic permission status
+    let micEnabled = false;
+    try {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          try { return navigator.permissions.query({ name: 'microphone' as PermissionName }).then(p => p.state === 'granted'); } catch { return false; }
+        },
+      });
+      micEnabled = result?.[0]?.result || false;
+    } catch {}
+
+    // Detect JS libraries on the page
+    let detectedLibs: string[] = [];
+    try {
+      const libResult = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const libs: string[] = [];
+          if ((window as any).React || document.querySelector('[data-reactroot]') || document.querySelector('#__next')) libs.push('React');
+          if ((window as any).Vue || document.querySelector('[data-v-]')) libs.push('Vue');
+          if ((window as any).angular || document.querySelector('[ng-app]') || document.querySelector('[ng-version]')) libs.push('Angular');
+          if ((window as any).jQuery || (window as any).$?.fn?.jquery) libs.push('jQuery');
+          if ((window as any).__NEXT_DATA__) libs.push('Next.js');
+          if ((window as any).__NUXT__) libs.push('Nuxt');
+          if (document.querySelector('meta[name="generator"][content*="WordPress"]')) libs.push('WordPress');
+          if ((window as any).Shopify) libs.push('Shopify');
+          if ((window as any).__svelte_meta) libs.push('Svelte');
+          if ((window as any).__remixContext) libs.push('Remix');
+          if (document.querySelector('script[src*="gatsby"]')) libs.push('Gatsby');
+          if ((window as any).Webflow) libs.push('Webflow');
+          if ((window as any)._satellite) libs.push('Adobe Launch');
+          if ((window as any).gtag || (window as any).ga) libs.push('Google Analytics');
+          if ((window as any).Sentry) libs.push('Sentry');
+          if ((window as any).tailwind) libs.push('Tailwind CSS');
+          return libs;
+        },
+      });
+      detectedLibs = libResult?.[0]?.result || [];
+    } catch {}
+
+    const surface = cropRect ? 'region' : desktopMode ? 'desktop' : 'tab';
+
     const rec = await api.createRecording({
       title: tabTitle || 'Untitled Recording',
       url: tabUrl || '',
       startTime: now,
       duration: 0,
+      mediaType: 'video',
+      recordingSurface: surface,
+      micEnabled,
+      isIncognito,
+      detectedLibs,
     });
 
     await ensureOffscreenDocument();
@@ -501,6 +556,14 @@ function handleCaptureFailed(): void {
   persistRecordingState();
 }
 
+async function uploadThumbnail(recordingId: string, dataUrl: string): Promise<void> {
+  try {
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    await api.uploadThumbnail(recordingId, blob);
+  } catch {}
+}
+
 function deactivatePageAgent(tabId: number): void {
   chrome.scripting.executeScript({
     target: { tabId },
@@ -563,6 +626,11 @@ async function stopRecording(): Promise<{
         const tab = await chrome.tabs.get(savedTabId);
         previewThumb = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 80 });
       } catch {}
+
+      // Upload thumbnail to R2 in background
+      if (previewThumb) {
+        uploadThumbnail(recId, previewThumb).catch(() => {});
+      }
 
       chrome.storage.session.set({
         devrecorderSavedModal: { recId, shareLink, viewLink, previewThumb },
@@ -654,18 +722,13 @@ function onBeforeRequest(
   details: Parameters<Parameters<typeof chrome.webRequest.onBeforeRequest.addListener>[0]>[0]
 ): chrome.webRequest.BlockingResponse | undefined {
   if (details.tabId !== recording.tabId) return;
-  // Only capture fetch/XHR requests, skip images, scripts, CSS, fonts etc.
-  if (details.type !== 'xmlhttprequest') return;
-  // Skip CORS preflight requests  they contain no useful data
+  // Skip CORS preflight requests
   if (details.method === 'OPTIONS') return;
-  // Skip framework noise and analytics requests
+  // Skip analytics and noise
   try {
     const u = new URL(details.url);
     const p = u.pathname;
-    // Next.js RSC prefetch
     if (u.searchParams.has('_rsc')) return;
-    // Next.js static assets
-    if (p.startsWith('/_next/')) return;
     // Google Analytics / Tag Manager
     if (u.hostname.includes('google-analytics.com')) return;
     if (u.hostname.includes('googletagmanager.com')) return;
@@ -679,9 +742,6 @@ function onBeforeRequest(
     if (u.hostname.includes('intercom.io')) return;
     if (u.hostname.includes('crisp.chat')) return;
     if (u.hostname.includes('sentry.io')) return;
-    // Common CDNs / static assets that slip through as XHR
-    if (u.hostname.includes('cdn.jsdelivr.net')) return;
-    if (u.hostname.includes('cdnjs.cloudflare.com')) return;
     // Browser extension internal requests
     if (u.protocol === 'chrome-extension:') return;
   } catch {}
@@ -703,8 +763,8 @@ function onBeforeRequest(
     }
   }
 
-  // Evict stale pending requests older than 30s (e.g. aborted/hung requests)
-  if (pendingRequests.size > 20) {
+  // Evict stale pending requests older than 30s
+  if (pendingRequests.size > 100) {
     const cutoff = details.timeStamp - 30_000;
     for (const [id, req] of pendingRequests) {
       if (req.startTime < cutoff) pendingRequests.delete(id);
@@ -762,17 +822,36 @@ function onCompleted(
   pendingRequests.delete(details.requestId);
 
   const relTime = req.startTime - recording.startTime!;
+  const isXhr = req.type === 'xmlhttprequest';
 
-  // Delay so page-agent's fetch/XHR interceptor has time to send response body.
-  // Try at 500ms first, retry at 1.5s, then final attempt at 3.5s.
-  const emitEvent = (retriesLeft: number) => {
-    const bodies = findResponseBody(req.method, req.url);
-    if (!bodies && retriesLeft > 0) {
-      setTimeout(() => emitEvent(retriesLeft - 1), retriesLeft > 1 ? 1000 : 2000);
-      return;
-    }
+  if (isXhr) {
+    // XHR/fetch: delay to wait for page-agent's body interception
+    const emitEvent = (retriesLeft: number) => {
+      const bodies = findResponseBody(req.method, req.url);
+      if (!bodies && retriesLeft > 0) {
+        setTimeout(() => emitEvent(retriesLeft - 1), retriesLeft > 1 ? 1000 : 2000);
+        return;
+      }
 
-    const data: NetworkEventData = {
+      queueEvent('network', relTime, {
+        url: req.url,
+        method: req.method,
+        resourceType: req.type,
+        status: details.statusCode,
+        statusLine: details.statusLine,
+        duration: details.timeStamp - req.startTime,
+        initiator: req.initiator,
+        error: null,
+        requestHeaders: req.requestHeaders,
+        responseHeaders: req.responseHeaders,
+        requestBody: bodies?.requestBody || req.requestBody,
+        responseBody: bodies?.responseBody || null,
+      } as unknown as Record<string, any>);
+    };
+    setTimeout(() => emitEvent(2), 500);
+  } else {
+    // Static resources (JS, CSS, images, fonts, etc.): emit immediately, no body needed
+    queueEvent('network', relTime, {
       url: req.url,
       method: req.method,
       resourceType: req.type,
@@ -783,14 +862,10 @@ function onCompleted(
       error: null,
       requestHeaders: req.requestHeaders,
       responseHeaders: req.responseHeaders,
-      requestBody: bodies?.requestBody || req.requestBody,
-      responseBody: bodies?.responseBody || null,
-    };
-
-    queueEvent('network', relTime, data as unknown as Record<string, any>);
-  };
-
-  setTimeout(() => emitEvent(2), 500);
+      requestBody: null,
+      responseBody: null,
+    } as unknown as Record<string, any>);
+  }
 }
 
 function onErrorOccurred(
@@ -1324,11 +1399,36 @@ async function handleScreenshotCapture(
     const title = tabInfo?.tabTitle || tab.title || 'Untitled';
     const url = tabInfo?.tabUrl || tab.url || '';
 
+    // Detect libraries
+    let detectedLibs: string[] = [];
+    try {
+      const libResult = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const libs: string[] = [];
+          if ((window as any).React || document.querySelector('[data-reactroot]') || document.querySelector('#__next')) libs.push('React');
+          if ((window as any).Vue || document.querySelector('[data-v-]')) libs.push('Vue');
+          if ((window as any).angular || document.querySelector('[ng-app]')) libs.push('Angular');
+          if ((window as any).jQuery || (window as any).$?.fn?.jquery) libs.push('jQuery');
+          if ((window as any).__NEXT_DATA__) libs.push('Next.js');
+          if ((window as any).__NUXT__) libs.push('Nuxt');
+          if ((window as any).Shopify) libs.push('Shopify');
+          if ((window as any).__svelte_meta) libs.push('Svelte');
+          if ((window as any).__remixContext) libs.push('Remix');
+          return libs;
+        },
+      });
+      detectedLibs = libResult?.[0]?.result || [];
+    } catch {}
+
     const rec = await api.createRecording({
       title: `Screenshot: ${title}`,
       url,
       startTime: Date.now(),
       duration: 0,
+      mediaType: 'screenshot',
+      isIncognito: tab.incognito,
+      detectedLibs,
     });
 
     // Capture all context (device info, console, network, storage) in parallel
@@ -1359,19 +1459,30 @@ async function handleScreenshotSave(
   imageDataUrl: string,
   title?: string,
   description?: string,
+  fullscreenDataUrl?: string | null,
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    // Update title if provided
-    if (title) {
-      await api.updateRecording(screenshotRecordingId, { title } as any).catch(() => {});
+    // Update title and description if provided
+    const updateData: Record<string, string> = {};
+    if (title) updateData.title = title;
+    if (description) updateData.description = description;
+    if (Object.keys(updateData).length > 0) {
+      await api.updateRecording(screenshotRecordingId, updateData as any).catch(() => {});
     }
 
-    // Convert data URL to Blob
+    // Upload the annotated/cropped screenshot
     const res = await fetch(imageDataUrl);
     const blob = await res.blob();
-
-    // Upload using the screenshot upload method
     await api.uploadScreenshot(screenshotRecordingId, blob);
+
+    // Upload fullscreen screenshot as thumbnail if included
+    if (fullscreenDataUrl && fullscreenDataUrl !== imageDataUrl) {
+      try {
+        const fullRes = await fetch(fullscreenDataUrl);
+        const fullBlob = await fullRes.blob();
+        await api.uploadThumbnail(screenshotRecordingId, fullBlob);
+      } catch {}
+    }
 
     // Notify completion
     chrome.storage.session.set({
@@ -1522,7 +1633,10 @@ async function captureScreenshotContext(screenshotRecordingId: string, tabId: nu
       });
     });
 
-    // Also add Performance API entries for non-XHR resources (scripts, css, images, etc.)
+  } catch { /* non-critical */ }
+
+  // ── 3c. Static resources from Performance API (JS, CSS, images, fonts) ──
+  try {
     const perfResults = await chrome.scripting.executeScript({
       target: { tabId },
       func: () => {
