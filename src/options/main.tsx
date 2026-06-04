@@ -1,13 +1,13 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ErrorBoundary } from '@shared/ErrorBoundary';
-import { Viewer } from './Viewer';
-import './viewer.css';
+import { Options } from './Options';
+import './options.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
-      <Viewer />
+      <Options />
     </ErrorBoundary>
   </StrictMode>
 );

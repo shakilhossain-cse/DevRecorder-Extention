@@ -2,6 +2,16 @@ import { MSG } from '@shared/types';
 import type { ExtensionMessage, CropRect } from '@shared/types';
 import { api } from '@shared/api';
 import { fixWebmDuration } from './fix-webm-duration';
+import {
+  startRewindBuffer,
+  stopRewindBuffer,
+  finalizeRewindBuffer,
+  getRewindBufferState,
+  isRewindBufferActive,
+  getRewindBufferTabId,
+  getRewindBufferHost,
+  getRewindBufferSeconds,
+} from './rewind-buffer';
 
 let mediaRecorder: MediaRecorder | null = null;
 let chunks: Blob[] = [];
@@ -61,6 +71,58 @@ chrome.runtime.onMessage.addListener(
         mediaRecorder.resume();
       }
       sendResponse({ success: true });
+      return false;
+    }
+
+    // ── Rewind / Share Last Minute (Phase 1 / Phase 6) ───────
+    if (msg.type === MSG.REWIND_START) {
+      // Phase 6: REWIND_START now carries tabId + host so the buffer can
+      // expose them via REWIND_BUFFER_INFO after a SW restart.
+      startRewindBuffer(msg.streamId, msg.bufferSeconds, msg.tabId, msg.host).then(
+        () => sendResponse({ success: true }),
+        (err: Error) => sendResponse({ success: false, error: err.message }),
+      );
+      return true; // async
+    }
+
+    if (msg.type === MSG.REWIND_STOP) {
+      stopRewindBuffer();
+      sendResponse({ success: true });
+      return false;
+    }
+
+    if (msg.type === MSG.REWIND_FINALIZE) {
+      finalizeRewindBuffer().then((result) => {
+        if (!result) {
+          sendResponse({ success: false, error: 'no-buffer' });
+          return;
+        }
+        // chrome.runtime messages can't carry ArrayBuffer directly; serialize.
+        sendResponse({
+          success: true,
+          buffer: Array.from(new Uint8Array(result.buffer)),
+          mimeType: result.mimeType,
+          durationMs: result.durationMs,
+        });
+      }).catch((err: Error) => sendResponse({ success: false, error: err.message }));
+      return true; // async
+    }
+
+    if (msg.type === MSG.REWIND_STATUS) {
+      sendResponse(getRewindBufferState());
+      return false;
+    }
+
+    // Phase 6: discovery probe from the SW boot path. Lets the SW detect
+    // that this offscreen doc survived a service-worker restart with a live
+    // buffer still attached, so it can hydrate state instead of teardown.
+    if (msg.type === MSG.REWIND_BUFFER_INFO) {
+      sendResponse({
+        active: isRewindBufferActive(),
+        tabId: getRewindBufferTabId(),
+        host: getRewindBufferHost(),
+        bufferSeconds: getRewindBufferSeconds(),
+      });
       return false;
     }
 

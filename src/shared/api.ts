@@ -114,7 +114,7 @@ export const api = {
     });
   },
 
-  async uploadVideo(recordingId: string, videoBlob: Blob, _onProgress?: (pct: number) => void): Promise<void> {
+  async uploadVideo(recordingId: string, videoBlob: Blob, onProgress?: (pct: number) => void): Promise<void> {
     const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB per part
     const size = videoBlob.size;
 
@@ -127,13 +127,16 @@ export const api = {
       if (!urlRes.ok) throw new Error(`Failed to get upload URL: ${urlRes.status}`);
       const { uploadUrl, key, videoUrl } = await urlRes.json();
 
+      if (onProgress) onProgress(10);
       const uploadRes = await fetch(uploadUrl, { method: 'PUT', body: videoBlob });
       if (!uploadRes.ok) throw new Error(`R2 upload failed: ${uploadRes.status}`);
+      if (onProgress) onProgress(90);
 
       await authFetch(`${API_BASE}/recordings/${recordingId}/confirm-upload`, {
         method: 'POST',
         body: JSON.stringify({ key, videoUrl, fileSizeBytes: size }),
       });
+      if (onProgress) onProgress(100);
       // Simple upload done
       return;
     }
@@ -184,6 +187,11 @@ export const api = {
       }
 
       completedParts.push({ ETag: etag || '', PartNumber: partNumber });
+      if (onProgress) {
+        // Reserve the top 5% for the complete call.
+        const pct = Math.min(95, Math.round(((i + 1) / totalParts) * 95));
+        onProgress(pct);
+      }
     }
 
     // 3. Complete multipart upload
@@ -192,6 +200,7 @@ export const api = {
       body: JSON.stringify({ key, uploadId, videoUrl, parts: completedParts, fileSizeBytes: size }),
     });
     if (!completeRes.ok) throw new Error(`Complete multipart failed: ${completeRes.status}`);
+    if (onProgress) onProgress(100);
 
     // Multipart upload done
   },

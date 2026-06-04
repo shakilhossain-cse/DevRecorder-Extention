@@ -1,9 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { MSG } from '@shared/types';
-import type { RecordingState, CaptureMode } from '@shared/types';
+import type { RecordingState, CaptureMode, RewindStatus, TimelineEvent } from '@shared/types';
 import { api } from '@shared/api';
+import { getRewindClip, markClipUploaded } from '@shared/rewind-clips-db';
+import type { RewindClip } from '@shared/rewind-clips-db';
 
 const FRONTEND_URL = 'https://www.devrecorder.com';
+
+// Events bulk-upload batch size for rewind clip uploads. Matches the value in
+// src/viewer/RewindPlayback.tsx so chatty pages don't blow JSON body limits.
+const REWIND_EVENT_UPLOAD_BATCH = 500;
 
 export function Popup() {
   const [authed, setAuthed] = useState<boolean | null>(null); // null = loading
@@ -25,6 +31,33 @@ export function Popup() {
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     return (localStorage.getItem('devrecorder-theme') as 'dark' | 'light') || 'dark';
   });
+  // Share Last Minute (Rewind) state
+  const [rewindStatus, setRewindStatus] = useState<RewindStatus>({ status: 'idle' });
+  const [shareLastMinuteBusy, setShareLastMinuteBusy] = useState(false);
+  const [shareLastMinuteNotice, setShareLastMinuteNotice] = useState<string | null>(null);
+  // Phase 6: id of the tab the popup is currently looking at. Resolved at
+  // popup mount via chrome.tabs.query. Needed to fill REWIND_SWITCH_TAB's
+  // `targetTabId` when the user clicks the rewind button while it's
+  // showing `enabledOnOtherTab`.
+  const [popupActiveTabId, setPopupActiveTabId] = useState<number | null>(null);
+  // Rewind clip saved modal — parallel state machine to `savedLink` (the
+  // primary post-recording modal). The two never coexist: this gates on
+  // `rewindSavedClipId !== null && savedLink === null` at render time.
+  const [rewindSavedClipId, setRewindSavedClipId] = useState<string | null>(null);
+  const [rewindSavedClip, setRewindSavedClip] = useState<RewindClip | null>(null);
+  const [rewindSavedVideoUrl, setRewindSavedVideoUrl] = useState<string | null>(null);
+  const [rewindUploading, setRewindUploading] = useState(false);
+  const [rewindUploadProgress, setRewindUploadProgress] = useState(0);
+  const [rewindUploadError, setRewindUploadError] = useState<string | null>(null);
+  const [rewindShareUrl, setRewindShareUrl] = useState<string | null>(null);
+  const [rewindCopied, setRewindCopied] = useState(false);
+  // Inline confirmation modal for re-enabling rewind on a blocked/auto-disabled
+  // host. When non-null, the popup body is replaced by a confirm/cancel card.
+  const [rewindConfirm, setRewindConfirm] = useState<{
+    kind: 'urlBlocked' | 'autoDisabled' | 'defaultBlocked';
+    host: string;
+  } | null>(null);
+  const [rewindConfirmBusy, setRewindConfirmBusy] = useState(false);
   // Integration state
   const [integrations, setIntegrations] = useState<{ clickup: boolean; trello: boolean }>({ clickup: false, trello: false });
   const [showCreateTask, setShowCreateTask] = useState(false);
@@ -45,6 +78,20 @@ export function Popup() {
   }, [theme]);
 
   const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+
+  // Phase 6: resolve the active tab id once on mount. The popup uses this
+  // as REWIND_SWITCH_TAB's `targetTabId` when the user wants to move capture
+  // onto the tab they're currently on. We don't subscribe to onActivated
+  // here — the popup's lifetime is short, and the user can only click the
+  // button on the tab they're already looking at.
+  useEffect(() => {
+    chrome.tabs
+      .query({ active: true, currentWindow: true })
+      .then(([t]) => {
+        if (t && typeof t.id === 'number') setPopupActiveTabId(t.id);
+      })
+      .catch(() => {});
+  }, []);
 
   // Check auth on mount
   useEffect(() => {
@@ -113,6 +160,222 @@ export function Popup() {
     return () => stopTimer();
   }, [authed]);
 
+  // Rewind / Share Last Minute status. We query on popup open (which carries a
+  // user gesture — this is how the SW can call tabCapture.getMediaStreamId for
+  // the active tab) and then listen for status-change broadcasts.
+  useEffect(() => {
+    if (!authed) return;
+
+    const validStatuses = new Set([
+      'enabled',
+      'forceEnabled',
+      // Phase 6: buffer is alive on a different tab than the user's active
+      // tab. The popup renders a "switch capture to this tab" affordance
+      // when this status arrives.
+      'enabledOnOtherTab',
+      'autoDisabled',
+      'urlBlocked',
+      'defaultBlocked',
+      'fileBlocked',
+      'fullyDisabled',
+      'browserInternal',
+      'needsPopupOpen',
+      'idle',
+    ]);
+
+    const acceptStatus = (incoming: unknown): RewindStatus | null => {
+      if (!incoming || typeof incoming !== 'object') return null;
+      const s = (incoming as { status?: string }).status;
+      if (!s || !validStatuses.has(s)) return null;
+      return incoming as RewindStatus;
+    };
+
+    const queryStatus = () => {
+      chrome.runtime.sendMessage({ type: MSG.REWIND_STATUS }).then((res) => {
+        const next = acceptStatus(res);
+        if (next) setRewindStatus(next);
+      }).catch(() => {});
+    };
+
+    queryStatus();
+
+    const listener = (
+      msg: { type?: string; status?: RewindStatus; clipId?: string; error?: string },
+    ) => {
+      if (msg?.type === MSG.REWIND_STATUS_CHANGED) {
+        const next = acceptStatus(msg.status);
+        if (next) setRewindStatus(next);
+      }
+      // Phase 3 / 5 — once the SW persists the clip to IndexedDB it broadcasts
+      // REWIND_CLIP_SAVED. We no longer auto-close the popup: instead, we load
+      // the clip from IDB and render the inline rewind-saved modal so the user
+      // can preview, upload, copy the share link, or open the rich viewer.
+      if (msg?.type === MSG.REWIND_CLIP_SAVED) {
+        setShareLastMinuteBusy(false);
+        // Clear the inline success notice — the modal is now the success UI.
+        setShareLastMinuteNotice(null);
+        if (msg.clipId) {
+          setRewindSavedClipId(msg.clipId);
+          setRewindUploadError(null);
+          setRewindUploadProgress(0);
+          setRewindShareUrl(null);
+          setRewindCopied(false);
+          getRewindClip(msg.clipId)
+            .then((clip) => {
+              if (!clip) return;
+              setRewindSavedClip(clip);
+              const url = URL.createObjectURL(clip.blob);
+              setRewindSavedVideoUrl(url);
+              if (clip.uploaded) setRewindShareUrl(clip.uploaded.shareUrl);
+            })
+            .catch(() => {});
+        }
+      }
+      if (msg?.type === MSG.REWIND_CLIP_SAVE_FAILED) {
+        setShareLastMinuteBusy(false);
+        setShareLastMinuteNotice(msg.error || 'Failed to save replay clip');
+      }
+    };
+    chrome.runtime.onMessage.addListener(listener);
+    return () => chrome.runtime.onMessage.removeListener(listener);
+  }, [authed]);
+
+  // Revoke the rewind preview's object URL when it's replaced or unmounted.
+  // We track the URL in state so the JSX can read it directly; cleanup runs
+  // when `rewindSavedVideoUrl` changes (revoking the previous value) and on
+  // unmount.
+  useEffect(() => {
+    return () => {
+      if (rewindSavedVideoUrl) URL.revokeObjectURL(rewindSavedVideoUrl);
+    };
+  }, [rewindSavedVideoUrl]);
+
+  // Upload the saved rewind clip to DevRecorder. This mirrors the upload
+  // pipeline in src/viewer/RewindPlayback.tsx (createRecording -> uploadVideo
+  // -> bulk events -> device-info -> updateRecording -> markClipUploaded). We
+  // intentionally keep this inline rather than extracting a shared helper —
+  // the popup needs a slimmer UI surface and we don't want to thread setters
+  // through a shared module. RewindPlayback.tsx remains the source of truth
+  // for the richer viewer-side flow.
+  const handleRewindUpload = async () => {
+    if (rewindUploading) return;
+    const clip = rewindSavedClip;
+    if (!clip) return;
+    if (!authed) return;
+    if (rewindShareUrl || clip.uploaded) return;
+
+    setRewindUploadError(null);
+    setRewindUploading(true);
+    setRewindUploadProgress(0);
+
+    try {
+      const titleHost = clip.host || 'capture';
+      const durationSec = Math.max(1, Math.round(clip.durationMs / 1000));
+      const { _id } = await api.createRecording({
+        title: `Rewind: ${titleHost}`,
+        url: clip.sourceTabUrl,
+        startTime: clip.capturedAt,
+        duration: durationSec,
+        mediaType: 'video',
+        recordingSurface: 'tab',
+      });
+
+      await api.uploadVideo(_id, clip.blob, (pct) => setRewindUploadProgress(pct));
+
+      // Ship events after the video lands — same ordering as RewindPlayback.
+      // Non-fatal: a failure here still leaves a playable recording on the
+      // server, so we surface the error but don't abort.
+      if (clip.events && clip.events.length > 0) {
+        try {
+          const payload: { type: string; relativeTime: number; data: Record<string, any> }[] =
+            clip.events.map((e: TimelineEvent) => ({
+              type: e.type,
+              relativeTime: e.relativeTime,
+              data: e.data as unknown as Record<string, any>,
+            }));
+          for (let i = 0; i < payload.length; i += REWIND_EVENT_UPLOAD_BATCH) {
+            await api.sendEvents(_id, payload.slice(i, i + REWIND_EVENT_UPLOAD_BATCH));
+          }
+        } catch (err) {
+          setRewindUploadError(
+            `Video uploaded, but ${clip.events.length} events failed: ${(err as Error).message}`,
+          );
+        }
+      }
+
+      // Device-info snapshot (one synthetic event at relativeTime 0).
+      if (clip.deviceInfo) {
+        try {
+          await api.sendEvents(_id, [
+            {
+              type: 'device-info',
+              relativeTime: 0,
+              data: clip.deviceInfo as unknown as Record<string, any>,
+            },
+          ]);
+        } catch {
+          // best-effort
+        }
+      }
+
+      // Refine duration server-side (idempotent — best-effort).
+      try {
+        await api.updateRecording(_id, { duration: durationSec });
+      } catch {
+        // best-effort
+      }
+
+      const shareUrl = `${FRONTEND_URL}/recordings/${_id}`;
+      try {
+        await markClipUploaded(clip.id, { recordingId: _id, shareUrl });
+      } catch {
+        // The IDB write is convenience-only; the share URL we already have
+        // works regardless of whether the local clip is marked uploaded.
+      }
+      setRewindShareUrl(shareUrl);
+      setRewindUploadProgress(100);
+    } catch (err) {
+      setRewindUploadError((err as Error).message || 'Upload failed');
+    } finally {
+      setRewindUploading(false);
+    }
+  };
+
+  // Reset all rewind-saved-modal state and revoke the preview URL. Called by
+  // the modal's Close button and after "Open in Viewer".
+  const handleRewindClose = () => {
+    if (rewindSavedVideoUrl) URL.revokeObjectURL(rewindSavedVideoUrl);
+    setRewindSavedClipId(null);
+    setRewindSavedClip(null);
+    setRewindSavedVideoUrl(null);
+    setRewindUploading(false);
+    setRewindUploadProgress(0);
+    setRewindUploadError(null);
+    setRewindShareUrl(null);
+    setRewindCopied(false);
+  };
+
+  // Open the rich viewer for this clip and dismiss the modal. The viewer URL
+  // path (viewer.html?rewindClipId=…) is unchanged from the previous flow —
+  // we're just gating it behind a user click instead of auto-opening.
+  const handleRewindOpenViewer = () => {
+    if (!rewindSavedClipId) return;
+    const url = chrome.runtime.getURL('viewer.html') + `?rewindClipId=${rewindSavedClipId}`;
+    chrome.tabs.create({ url, active: true });
+    handleRewindClose();
+  };
+
+  const handleRewindCopyShare = () => {
+    if (!rewindShareUrl) return;
+    navigator.clipboard.writeText(rewindShareUrl).then(
+      () => {
+        setRewindCopied(true);
+        setTimeout(() => setRewindCopied(false), 2000);
+      },
+      () => setRewindUploadError('Failed to copy link'),
+    );
+  };
+
   const startTimer = useCallback(() => {
     stopTimer();
     timerRef.current = setInterval(() => {
@@ -137,6 +400,199 @@ export function Popup() {
   const handleSignOut = () => {
     chrome.storage.local.remove('apiToken');
     setAuthed(false);
+  };
+
+  // Fire the actual SHARE_LAST_MINUTE flow. Separated from the click handler
+  // so the "re-enable then immediately share" path (after the user confirms
+  // on a blocked or auto-disabled host) can call it directly.
+  //
+  // Phase 3 / 5 flow:
+  //   - SW persists the clip to IndexedDB.
+  //   - SW broadcasts REWIND_CLIP_SAVED on success / REWIND_CLIP_SAVE_FAILED on
+  //     failure. The success listener above loads the clip and swaps the popup
+  //     body to the rewind-saved modal.
+  //   - We still inspect the direct response as a fallback (in case the
+  //     broadcast races, or the listener hasn't attached yet). On a direct
+  //     success response, we also seed the modal state from the clipId so the
+  //     UI doesn't depend on the broadcast.
+  const fireShareLastMinute = async () => {
+    setShareLastMinuteBusy(true);
+    setShareLastMinuteNotice('Capturing...');
+    try {
+      const res = await chrome.runtime.sendMessage({ type: MSG.SHARE_LAST_MINUTE });
+      if (res && res.success) {
+        // The broadcast listener will populate the modal. Clear the inline
+        // notice now that capture is done. Don't auto-close — the modal stays
+        // up until the user dismisses it.
+        setShareLastMinuteNotice(null);
+        // Fallback seed in case the broadcast listener didn't fire (it's the
+        // same chrome.runtime in this context, so it will, but belt-and-braces).
+        if (res.clipId && !rewindSavedClipId) {
+          setRewindSavedClipId(res.clipId);
+        }
+      } else {
+        setShareLastMinuteNotice(res?.error || 'Failed to share replay');
+        setShareLastMinuteBusy(false);
+      }
+    } catch (err) {
+      setShareLastMinuteNotice((err as Error).message);
+      setShareLastMinuteBusy(false);
+    }
+  };
+
+  // Resolve the latest status snapshot, since the broadcast may not have
+  // landed before we send the SHARE_LAST_MINUTE message after re-enabling /
+  // switching tabs (Phase 6). Hoisted above handleShareLastMinute so the
+  // Phase 6 switch-then-share path can reference it.
+  const isRewindActive = (s: RewindStatus): boolean =>
+    s.status === 'enabled' || s.status === 'forceEnabled';
+
+  const handleShareLastMinute = async () => {
+    if (shareLastMinuteBusy) return;
+    switch (rewindStatus.status) {
+      case 'enabled':
+      case 'forceEnabled':
+        await fireShareLastMinute();
+        return;
+      case 'enabledOnOtherTab': {
+        // Buffer is alive on a different tab. Share what's already buffered
+        // there — DON'T switch capture (that would destroy the bufferedHost's
+        // accumulated minute and start a fresh 0-second buffer on this tab).
+        // A separate "Switch capture to this tab" affordance lives below the
+        // share button for users who explicitly want to change capture target.
+        await fireShareLastMinute();
+        return;
+      }
+      case 'urlBlocked':
+        setRewindConfirm({ kind: 'urlBlocked', host: rewindStatus.host });
+        return;
+      case 'autoDisabled':
+        setRewindConfirm({ kind: 'autoDisabled', host: rewindStatus.host });
+        return;
+      case 'defaultBlocked':
+        setRewindConfirm({ kind: 'defaultBlocked', host: rewindStatus.host });
+        return;
+      case 'fileBlocked':
+      case 'fullyDisabled':
+      case 'browserInternal':
+      case 'needsPopupOpen':
+      case 'idle':
+        // Non-interactive — the button visual already shows it's unavailable.
+        return;
+      default: {
+        const _exhaustive: never = rewindStatus;
+        return _exhaustive;
+      }
+    }
+  };
+
+  const handleRewindConfirm = async () => {
+    if (!rewindConfirm || rewindConfirmBusy) return;
+    setRewindConfirmBusy(true);
+    try {
+      if (rewindConfirm.kind === 'urlBlocked') {
+        // User-managed blocklist: removing the host lets the buffer run normally.
+        await chrome.runtime.sendMessage({
+          type: MSG.UPDATE_REWIND_BLOCKLIST,
+          action: 'remove',
+          host: rewindConfirm.host,
+        });
+      } else {
+        // autoDisabled OR defaultBlocked: the entry isn't user-editable (or is
+        // the heuristic's), so the only way past it is to force-enable per-site.
+        await chrome.runtime.sendMessage({
+          type: MSG.FORCE_ENABLE_REWIND,
+          host: rewindConfirm.host,
+        });
+      }
+      // Close the confirmation card immediately. The SW has already finished
+      // its mutation + evaluateRewind() by the time the message resolves, so
+      // a single status query will tell us whether to fire share.
+      setRewindConfirm(null);
+      // Poll once for the fresh status. The broadcast may still be in flight,
+      // so we use the response from REWIND_STATUS as ground truth.
+      const fresh = await chrome.runtime.sendMessage({ type: MSG.REWIND_STATUS }).catch(() => null);
+      const next = fresh && typeof fresh === 'object' && (fresh as { status?: string }).status
+        ? (fresh as RewindStatus)
+        : null;
+      if (next) {
+        setRewindStatus(next);
+        if (isRewindActive(next)) {
+          await fireShareLastMinute();
+        }
+      }
+    } catch (err) {
+      setShareLastMinuteNotice((err as Error).message);
+      setRewindConfirm(null);
+    }
+    setRewindConfirmBusy(false);
+  };
+
+  const handleRewindConfirmCancel = () => {
+    if (rewindConfirmBusy) return;
+    setRewindConfirm(null);
+  };
+
+  // Tooltip copy per status — exhaustive over the union.
+  const rewindTooltip = (s: RewindStatus): string => {
+    switch (s.status) {
+      case 'enabled':
+        return 'Share the last ~60 seconds of this tab';
+      case 'forceEnabled':
+        return 'Instant Replay was automatically turned off for this site, but you turned it back on. It might make your device run slower.';
+      case 'enabledOnOtherTab':
+        // The buffer is rolling on bufferedHost, not the active tab. Clicking
+        // the share button captures what's already in that buffer; a separate
+        // "Switch capture" link below the button moves capture if the user
+        // wants the active tab instead.
+        return `Share the last ~60 seconds of ${s.bufferedHost} (the tab currently being buffered).`;
+      case 'autoDisabled':
+        return 'Instant Replay was turned off automatically because capturing this site was found to be resource-intensive. Click to turn it on if needed.';
+      case 'urlBlocked':
+        return 'Instant Replay is off for this website to avoid slowing down your device. Click to turn it on if needed.';
+      case 'defaultBlocked':
+        return 'Instant Replay is off by default on this site for privacy. Click to turn it on if you understand the risk.';
+      case 'fileBlocked':
+        return 'Cannot replay on file:// URLs. Navigate to any website to use Instant Replay.';
+      case 'fullyDisabled':
+        return 'Instant Replay is fully disabled in settings.';
+      case 'browserInternal':
+        return 'Cannot replay on browser-internal pages. Navigate to any website to use Instant Replay.';
+      case 'needsPopupOpen':
+        return 'Opening the popup activates Instant Replay for this tab.';
+      case 'idle':
+        return 'Waiting for an active tab...';
+      default: {
+        const _exhaustive: never = s;
+        return _exhaustive;
+      }
+    }
+  };
+
+  // Whether clicking the rewind button does anything for the given status.
+  // enabled / forceEnabled go straight to share; urlBlocked / autoDisabled
+  // open the confirmation card; enabledOnOtherTab swaps capture then shares.
+  // All other statuses are non-interactive.
+  const isRewindButtonInteractive = (s: RewindStatus): boolean => {
+    switch (s.status) {
+      case 'enabled':
+      case 'forceEnabled':
+      case 'enabledOnOtherTab':
+      case 'urlBlocked':
+      case 'autoDisabled':
+      case 'defaultBlocked':
+        return true;
+      case 'fileBlocked':
+      case 'fullyDisabled':
+      case 'browserInternal':
+      case 'needsPopupOpen':
+      case 'idle':
+        return false;
+      default: {
+        const _exhaustive: never = s;
+        return _exhaustive;
+      }
+    }
   };
 
   const handleScreenshot = async (delay?: number) => {
@@ -618,6 +1074,121 @@ export function Popup() {
     );
   }
 
+  // ── Rewind clip saved modal ───────────────────
+  // Mutually exclusive with the primary saved modal above (we'd already have
+  // returned). Triggered by the REWIND_CLIP_SAVED broadcast — see the listener
+  // in the rewind-status effect.
+  if (rewindSavedClipId !== null && savedLink === null) {
+    const clip = rewindSavedClip;
+    const durSec = clip ? Math.round(clip.durationMs / 1000) : 0;
+    const sizeMb = clip ? (clip.sizeBytes / 1048576).toFixed(1) : '0.0';
+    return (
+      <div className="container">
+        <div className="saved-modal">
+          <div className={`saved-icon${rewindUploading ? ' uploading' : ''}`}>
+            {/* Counter-clockwise arrow — same SVG as the "Share Last Minute"
+                button's icon, kept in sync visually with the popup's rewind
+                affordance. */}
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={rewindUploading ? '#f59e0b' : '#22c55e'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="1 4 1 10 7 10"/>
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+            </svg>
+          </div>
+          <h2 className="saved-title">
+            {rewindUploading
+              ? `Uploading... ${rewindUploadProgress > 0 ? `${rewindUploadProgress}%` : ''}`
+              : 'Replay Clip Saved'}
+          </h2>
+          <p className="saved-subtitle">
+            {clip
+              ? `Last ${durSec}s · ${sizeMb} MB${clip.host ? ` · ${clip.host}` : ''}`
+              : 'Loading clip...'}
+          </p>
+
+          {/* Inline preview while we still have the local blob URL. The blob
+              is also retained in IDB so "Open in Viewer" works post-dismiss. */}
+          {rewindSavedVideoUrl && (
+            <video
+              src={rewindSavedVideoUrl}
+              controls
+              style={{ width: '100%', borderRadius: '8px', maxHeight: '200px', background: '#000' }}
+            />
+          )}
+
+          {rewindUploading && (
+            <div className="upload-progress-bar">
+              <div
+                className="upload-progress-fill"
+                style={rewindUploadProgress > 0 ? { width: `${rewindUploadProgress}%`, animation: 'none' } : undefined}
+              />
+            </div>
+          )}
+
+          {rewindShareUrl && !rewindUploading && (
+            <div className="saved-link-box">
+              <span className="saved-link-text">{rewindShareUrl}</span>
+              <button className="saved-copy-btn" onClick={handleRewindCopyShare}>
+                {rewindCopied ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                )}
+              </button>
+            </div>
+          )}
+
+          {rewindUploadError && (
+            <div style={{ fontSize: '11px', color: '#ef4444', marginTop: '4px' }}>
+              {rewindUploadError}
+            </div>
+          )}
+
+          <div className="saved-actions">
+            {!rewindShareUrl && (
+              <button
+                className="saved-open-btn"
+                onClick={handleRewindUpload}
+                disabled={rewindUploading || !authed || !clip}
+                title={!authed ? 'Sign in to upload' : ''}
+              >
+                {rewindUploading ? 'Uploading...' : 'Upload to DevRecorder'}
+              </button>
+            )}
+            {rewindShareUrl && (
+              <button
+                className="saved-open-btn"
+                onClick={() => {
+                  chrome.tabs.create({ url: rewindShareUrl });
+                }}
+              >
+                Open Share Link
+              </button>
+            )}
+            <button
+              className="saved-close-btn"
+              onClick={handleRewindOpenViewer}
+              disabled={rewindUploading}
+            >
+              Open in Viewer
+            </button>
+            <button
+              className="saved-close-btn"
+              onClick={handleRewindClose}
+              disabled={rewindUploading}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ── Main UI ────────────────────────────
   return (
     <div className="container">
@@ -771,6 +1342,130 @@ export function Popup() {
                 </button>
               </div>
             </div>
+            {/* Share Last Minute / Instant Replay (Phase 2) */}
+            {rewindConfirm ? (
+              <div
+                style={{
+                  border: '1px solid var(--border)',
+                  borderRadius: '10px',
+                  padding: '12px',
+                  background: 'var(--surface)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                }}
+              >
+                <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text)' }}>
+                  {rewindConfirm.kind === 'defaultBlocked'
+                    ? 'Turn on Instant Replay on this site?'
+                    : 'Turn on Instant Replay for this site?'}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                  {rewindConfirm.kind === 'defaultBlocked'
+                    ? 'This site is on the built-in privacy blocklist because pages here may contain sensitive personal, financial, or proprietary information. Continuing will buffer this tab in the background. You can turn it off again from the extension settings.'
+                    : 'Capturing this site may slow down your device. You can turn it off again from the extension settings.'}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  Site: <strong style={{ color: 'var(--text)' }}>{rewindConfirm.host}</strong>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                  <button
+                    className="saved-close-btn"
+                    style={{ flex: 1, padding: '8px' }}
+                    onClick={handleRewindConfirmCancel}
+                    disabled={rewindConfirmBusy}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="saved-open-btn"
+                    style={{ flex: 1, padding: '8px' }}
+                    onClick={handleRewindConfirm}
+                    disabled={rewindConfirmBusy}
+                  >
+                    {rewindConfirmBusy ? 'Working...' : 'Continue'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <button
+                  className={`btn-screenshot ${!isRewindButtonInteractive(rewindStatus) || shareLastMinuteBusy ? 'disabled' : ''}`}
+                  onClick={handleShareLastMinute}
+                  disabled={!isRewindButtonInteractive(rewindStatus) || shareLastMinuteBusy}
+                  title={rewindTooltip(rewindStatus)}
+                  // Phase 6: subtle amber accent when the rolling buffer is
+                  // on a different tab, so the user notices that clicking
+                  // will swap capture (not share immediately). Same button
+                  // structure; just inline border + tint.
+                  style={
+                    rewindStatus.status === 'enabledOnOtherTab'
+                      ? {
+                          width: '100%',
+                          borderColor: '#f59e0b',
+                          boxShadow: 'inset 0 0 0 1px #f59e0b',
+                        }
+                      : { width: '100%' }
+                  }
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="1 4 1 10 7 10"/>
+                    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                  </svg>
+                  <span>
+                    {shareLastMinuteBusy
+                      ? 'Capturing...'
+                      : rewindStatus.status === 'enabledOnOtherTab'
+                        ? `Share Last Minute (${rewindStatus.bufferedHost})`
+                        : 'Share Last Minute'}
+                  </span>
+                </button>
+                {/* Explicit "switch capture" link, shown only when buffer is on
+                    a different tab. The main share button captures the buffered
+                    tab's content; this link discards that buffer and starts a
+                    fresh one on the current tab (will take ~60s to fill). */}
+                {rewindStatus.status === 'enabledOnOtherTab' && popupActiveTabId !== null && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (popupActiveTabId === null) return;
+                      setShareLastMinuteNotice('Switching capture to this tab...');
+                      try {
+                        const swap = await chrome.runtime.sendMessage({
+                          type: MSG.REWIND_SWITCH_TAB,
+                          targetTabId: popupActiveTabId,
+                        });
+                        if (!swap || !swap.success) {
+                          setShareLastMinuteNotice((swap && swap.error) || 'Failed to switch');
+                        } else {
+                          setShareLastMinuteNotice('Capture switched. Buffer is filling...');
+                        }
+                      } catch (err) {
+                        setShareLastMinuteNotice((err as Error).message);
+                      }
+                    }}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'var(--text-muted)',
+                      fontSize: '11px',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                      padding: '4px 0',
+                      width: '100%',
+                      textAlign: 'center',
+                    }}
+                  >
+                    Switch capture to this tab instead
+                  </button>
+                )}
+                {shareLastMinuteNotice && (
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '-4px' }}>
+                    {shareLastMinuteNotice}
+                  </div>
+                )}
+              </>
+            )}
           </>
         )}
       </div>
@@ -802,6 +1497,26 @@ export function Popup() {
               <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
             </svg>
           )}
+        </button>
+        {/*
+          Settings entry point. Reuses .theme-toggle for the 32x32 icon-button
+          shape so we don't add a new style for a tiny addition. Calls
+          chrome.runtime.openOptionsPage() (Phase 4) which opens options.html
+          in a new tab per manifest options_ui.open_in_tab.
+        */}
+        <button
+          className="theme-toggle"
+          onClick={() => {
+            chrome.runtime.openOptionsPage();
+            window.close();
+          }}
+          title="Instant Replay settings"
+          aria-label="Open settings"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
         </button>
         <button className="btn-signout" onClick={handleSignOut} title="Sign out">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
